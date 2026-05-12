@@ -1,0 +1,37 @@
+{
+  "name": "art-garage-crm",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --stream dev",
+    "dev:web": "pnpm --filter @art-garage/web dev",
+    "dev:api": "pnpm --filter @art-garage/api start:dev",
+    "build": "pnpm --filter @art-garage/shared build && pnpm --filter @art-garage/api build && pnpm --filter @art-garage/web build",
+    "build:shared": "pnpm --filter @art-garage/shared build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "db:migrate": "pnpm --filter @art-garage/api exec prisma migrate dev",
+    "db:generate": "pnpm --filter @art-garage/api exec prisma generate",
+    "db:studio": "pnpm --filter @art-garage/api exec prisma studio",
+    "db:seed": "pnpm --filter @art-garage/api exec prisma db seed"
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@nestjs/core",
+      "@prisma/client",
+      "@prisma/engines",
+      "bcrypt",
+      "prisma",
+      "sharp",
+      "unrs-resolver"
+    ]
+  }
+}

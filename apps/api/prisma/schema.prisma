@@ -1,0 +1,246 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  ADMIN
+  STAFF
+}
+
+enum ProductUnit {
+  PCS
+  KG
+  L
+  M
+  PACK
+}
+
+enum MovementType {
+  IN
+  OUT
+  ADJUST
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  RESTORE
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         UserRole @default(STAFF)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  movements StockMovement[]
+  auditLogs AuditLog[]
+  lots      StockLot[]
+}
+
+// Аудит изменений сущностей. Append-only.
+model AuditLog {
+  id        String      @id @default(cuid())
+  entity    String // 'Product' | 'Variant' | 'Category' | 'Customer' | 'Supplier'
+  entityId  String
+  action    AuditAction
+  userId    String?
+  before    Json?
+  after     Json?
+  note      String?
+  createdAt DateTime    @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entity, entityId, createdAt])
+  @@index([userId, createdAt])
+}
+
+model Category {
+  id   String  @id @default(cuid())
+  name String  @unique
+  /** Короткий код-префикс (артикул) для использования в SKU: "BTL", "MUG". Опционален, при наличии — uppercase, уникальный. */
+  code String? @unique
+  /** Атомарный счётчик артикулов для товаров этой категории: 1, 2, 3... — даёт фиксированный формат KRU000001. */
+  nextProductSeq Int @default(1)
+  color     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  products Product[]
+
+  @@index([deletedAt])
+}
+
+// Родительский товар. Описывает модель ("BOTTLE COLBY"), несёт name/category/description/unit.
+// Конкретные SKU и остатки — на ProductVariant.
+model Product {
+  id   String  @id @default(cuid())
+  name String  @unique
+  /** Короткий артикул товара для 1С: "KRU000001". Уникален. Назначается автоматически при создании. */
+  code        String?     @unique
+  description String?
+  unit        ProductUnit @default(PCS)
+  categoryId  String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  deletedAt   DateTime?
+
+  category Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  variants ProductVariant[]
+
+  @@index([categoryId])
+  @@index([name])
+  @@index([deletedAt])
+}
+
+// Вариация товара. У каждой свой SKU, цена и остаток.
+// attributes хранит дополнительные характеристики ({ "color": "BLACK", "size": "M" }).
+model ProductVariant {
+  id           String   @id @default(cuid())
+  productId    String
+  sku          String   @unique
+  attributes   Json     @default("{}")
+  /** Продажная цена (selling). Себестоимость живёт на StockLot. */
+  price        Decimal? @db.Decimal(12, 2)
+  reorderLevel Int? // если null — используется глобальный порог дашборда
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  movements StockMovement[]
+  lots      StockLot[]
+
+  @@index([productId])
+}
+
+model Customer {
+  id        String    @id @default(cuid())
+  name      String
+  phone     String?
+  email     String?
+  note      String?
+  /** Постоянная скидка клиента в процентах (0–100). Применяется к продажной цене при OUT-движении; фактическая цена замораживается в StockMovement.unitPrice. */
+  discountPercent Decimal @default(0) @db.Decimal(5, 2)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  movements StockMovement[]
+
+  @@index([name])
+  @@index([deletedAt])
+}
+
+model Supplier {
+  id        String    @id @default(cuid())
+  name      String
+  phone     String?
+  email     String?
+  note      String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  movements StockMovement[]
+  lots      StockLot[]
+
+  @@index([name])
+  @@index([deletedAt])
+}
+
+// Журнал движений по вариациям. IN: +qty, OUT: -qty, ADJUST: signed.
+// Append-only: вместо удаления создаётся обратное движение со ссылкой через reversesId.
+//
+// IN/ADJUST+ → создаёт StockLot (1:1 через createdLot).
+// OUT/ADJUST- → потребляет существующие lot'ы через LotConsumption (FIFO или manual).
+// totalCost — себестоимость движения (для IN: qty × unitCost; для OUT/ADJUST-: сумма потреблённых).
+model StockMovement {
+  id         String       @id @default(cuid())
+  type       MovementType
+  variantId  String
+  quantity   Decimal      @db.Decimal(14, 3)
+  supplierId String?
+  customerId String?
+  userId     String
+  note       String?
+  /** Себестоимость операции. Null если не определена (для legacy/import). */
+  totalCost  Decimal?     @db.Decimal(14, 2)
+  /** Фактическая цена продажи за единицу (для OUT/ADJUST-). Замораживается в момент сделки — не привязана к Variant.price. Null для IN/ADJUST+ и legacy. */
+  unitPrice  Decimal?     @db.Decimal(12, 2)
+  /** Скидка клиента в момент сделки (audit trail). Null если клиент не указан или у клиента не было скидки. */
+  discountPercent Decimal? @db.Decimal(5, 2)
+  /** Если это сторнирующее движение — id оригинала, которое оно отменяет. */
+  reversesId String?      @unique
+  createdAt  DateTime     @default(now())
+
+  variant      ProductVariant   @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  supplier     Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  customer     Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  user         User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  reverses     StockMovement?   @relation("Storno", fields: [reversesId], references: [id], onDelete: SetNull)
+  reversedBy   StockMovement?   @relation("Storno")
+  createdLot   StockLot?        @relation("LotCreatedBy")
+  consumptions LotConsumption[] @relation("MovementConsumptions")
+
+  @@index([variantId, createdAt])
+  @@index([type, createdAt])
+  @@index([customerId, createdAt])
+  @@index([supplierId, createdAt])
+  @@index([userId, createdAt])
+}
+
+/// Партия товара — конкретный приход с фиксированной закупочной ценой.
+/// Один к одному с движением IN или ADJUST+ (см. createdByMovementId).
+model StockLot {
+  id                  String   @id @default(cuid())
+  variantId           String
+  /** Закупочная цена за единицу. 0 для ADJUST+ ("найдено") и для импорта без данных о цене. */
+  unitCost            Decimal  @db.Decimal(12, 2)
+  /** Сколько было в приходе изначально. */
+  initialQuantity     Decimal  @db.Decimal(14, 3)
+  /** Текущий остаток в этой партии (initialQuantity − суммарное потребление). */
+  remainingQuantity   Decimal  @db.Decimal(14, 3)
+  /** Дата прихода — определяет порядок FIFO. */
+  receivedAt          DateTime
+  supplierId          String?
+  note                String?
+  userId              String
+  createdByMovementId String   @unique
+  createdAt           DateTime @default(now())
+
+  variant           ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  supplier          Supplier?      @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  user              User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  createdByMovement StockMovement  @relation("LotCreatedBy", fields: [createdByMovementId], references: [id], onDelete: Cascade)
+  consumptions      LotConsumption[]
+
+  @@index([variantId, receivedAt])
+  @@index([variantId, remainingQuantity])
+}
+
+/// Связь "движение ↔ партия": сколько единиц данное OUT/ADJUST- взяло из конкретной партии.
+model LotConsumption {
+  id         String   @id @default(cuid())
+  lotId      String
+  movementId String
+  quantity   Decimal  @db.Decimal(14, 3)
+  createdAt  DateTime @default(now())
+
+  lot      StockLot      @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  movement StockMovement @relation("MovementConsumptions", fields: [movementId], references: [id], onDelete: Cascade)
+
+  @@index([lotId])
+  @@index([movementId])
+}
