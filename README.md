@@ -106,9 +106,11 @@ CRM хранит финансовые данные клиента. Это **не
 2. В настройках сервиса:
    - **Root Directory**: `apps/api`
    - **Build Command**: автоматически подхватится из `apps/api/railway.json`, либо явно:
-     `pnpm install --frozen-lockfile && pnpm --filter @art-garage/api prisma generate && pnpm --filter @art-garage/api build`
+     `pnpm install --frozen-lockfile && pnpm --filter @art-garage/api build`
+     (prisma generate уже отрабатывает в postinstall — повторять не нужно)
    - **Start Command**:
-     `pnpm --filter @art-garage/api prisma migrate deploy && pnpm --filter @art-garage/api start:prod`
+     `pnpm --filter @art-garage/api exec prisma migrate deploy && pnpm --filter @art-garage/api start:prod`
+     (важен `exec` — без него pnpm ищет npm-script "prisma" и падает)
    - **Watch paths**: `apps/api/**`, `packages/shared/**`, `pnpm-lock.yaml`
 3. Variables:
    - `DATABASE_URL` = pooled Neon URL
