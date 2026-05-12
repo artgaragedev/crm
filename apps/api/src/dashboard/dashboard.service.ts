@@ -26,19 +26,35 @@ export class DashboardService {
   async summary() {
     const since = new Date(Date.now() - ACTIVITY_DAYS * 24 * 60 * 60 * 1000);
 
-    // 1. Все активные вариации (родитель не soft-deleted).
-    const variants = await this.prisma.productVariant.findMany({
-      where: { product: { deletedAt: null } },
-      include: {
-        product: { select: { id: true, name: true, unit: true } },
-      },
-    });
+    // Все 5 запросов независимы — гоним параллельно одним Promise.all.
+    // На Neon cross-region это ~1с вместо ~3-5с по сравнению с последовательным await.
+    const [variants, stockGrouped, lotCostAgg, activityGrouped, recent] =
+      await Promise.all([
+        this.prisma.productVariant.findMany({
+          where: { product: { deletedAt: null } },
+          include: { product: { select: { id: true, name: true, unit: true } } },
+        }),
+        this.prisma.stockMovement.groupBy({
+          by: ['variantId', 'type'],
+          _sum: { quantity: true },
+        }),
+        this.prisma.stockLot.findMany({
+          where: { variant: { product: { deletedAt: null } } },
+          select: { remainingQuantity: true, unitCost: true },
+        }),
+        this.prisma.stockMovement.groupBy({
+          by: ['type'],
+          where: { createdAt: { gte: since } },
+          _count: true,
+        }),
+        this.prisma.stockMovement.findMany({
+          take: RECENT_LIMIT,
+          orderBy: { createdAt: 'desc' },
+          include: MOVEMENT_INCLUDE,
+        }),
+      ]);
 
-    // 2. Сразу все агрегации движений по variantId+type — за один запрос.
-    const stockGrouped = await this.prisma.stockMovement.groupBy({
-      by: ['variantId', 'type'],
-      _sum: { quantity: true },
-    });
+    // stockMap нужен для итерации по variants ниже — пересобираем из stockGrouped.
     const stockMap = new Map<string, number>();
     for (const v of variants) stockMap.set(v.id, 0);
     for (const row of stockGrouped) {
@@ -90,32 +106,16 @@ export class DashboardService {
 
     lowStockEntries.sort((a, b) => a.currentStock - b.currentStock);
 
-    // 3.5. Inventory cost (по партиям): sum(lot.remainingQuantity × lot.unitCost) для активных вариаций.
-    const lotCostAgg = await this.prisma.stockLot.findMany({
-      where: { variant: { product: { deletedAt: null } } },
-      select: { remainingQuantity: true, unitCost: true },
-    });
+    // Inventory cost (по партиям): sum(lot.remainingQuantity × lot.unitCost).
     let inventoryCost = 0;
     for (const lot of lotCostAgg) {
       const r = Number(lot.remainingQuantity);
       if (r > 0) inventoryCost += r * Number(lot.unitCost);
     }
 
-    // 4. Activity 30 дней.
-    const activityGrouped = await this.prisma.stockMovement.groupBy({
-      by: ['type'],
-      where: { createdAt: { gte: since } },
-      _count: true,
-    });
+    // Activity 30 дней.
     const counts: Record<'IN' | 'OUT' | 'ADJUST', number> = { IN: 0, OUT: 0, ADJUST: 0 };
     for (const row of activityGrouped) counts[row.type] = row._count;
-
-    // 5. Топ последних движений.
-    const recent = await this.prisma.stockMovement.findMany({
-      take: RECENT_LIMIT,
-      orderBy: { createdAt: 'desc' },
-      include: MOVEMENT_INCLUDE,
-    });
 
     return {
       inventory: {

@@ -66,54 +66,76 @@ export class ReportsService {
 
   async summary(query: SummaryQuery) {
     const { from, to } = this.normalizeRange(query);
-    const current = await this.aggregate(from, to, query);
 
-    let previous: Awaited<ReturnType<typeof this.aggregate>> | null = null;
-    let prevPeriod: { from: string; to: string } | null = null;
+    // Параметры предыдущего периода (если запрошен).
+    let prevFrom: Date | null = null;
+    let prevTo: Date | null = null;
     if (query.compareToPrevious) {
-      // Эквивалентный период той же длины, заканчивающийся ровно перед текущим.
       const ms = to.getTime() - from.getTime();
-      const prevFrom = new Date(from.getTime() - ms - 1);
-      const prevTo = new Date(from.getTime() - 1);
-      previous = await this.aggregate(prevFrom, prevTo, query);
-      prevPeriod = { from: prevFrom.toISOString(), to: prevTo.toISOString() };
+      prevFrom = new Date(from.getTime() - ms - 1);
+      prevTo = new Date(from.getTime() - 1);
     }
+
+    // Текущий + предыдущий периоды агрегируются параллельно — независимые запросы.
+    const [current, previous] = await Promise.all([
+      this.aggregate(from, to, query),
+      prevFrom && prevTo ? this.aggregate(prevFrom, prevTo, query) : Promise.resolve(null),
+    ]);
 
     return {
       period: { from: from.toISOString(), to: to.toISOString() },
       ...current,
-      previous: previous && prevPeriod ? { period: prevPeriod, ...previous } : null,
+      previous:
+        previous && prevFrom && prevTo
+          ? {
+              period: { from: prevFrom.toISOString(), to: prevTo.toISOString() },
+              ...previous,
+            }
+          : null,
     };
   }
 
   /** Внутренний агрегат KPI за диапазон. Используется в summary и в compare-to-previous. */
   private async aggregate(from: Date, to: Date, filters: ReportFilters) {
-    const totals = await this.prisma.$queryRaw<
-      Array<{
-        revenue: string | null;
-        cogs: string | null;
-        transactions: bigint;
-        priced_transactions: bigint;
-        qty: string | null;
-      }>
-    >`
-      SELECT
-        COALESCE(SUM(ABS(m."quantity") * m."unitPrice"), 0)::text AS revenue,
-        COALESCE(SUM(m."totalCost"), 0)::text AS cogs,
-        COUNT(*) AS transactions,
-        COUNT(m."unitPrice") AS priced_transactions,
-        COALESCE(SUM(ABS(m."quantity")), 0)::text AS qty
-      FROM "StockMovement" m
-      LEFT JOIN "ProductVariant" v ON v.id = m."variantId"
-      LEFT JOIN "Product" p ON p.id = v."productId"
-      WHERE m."type" = 'OUT'
-        AND m."createdAt" >= ${from}
-        AND m."createdAt" <= ${to}
-        AND NOT EXISTS (
-          SELECT 1 FROM "StockMovement" r WHERE r."reversesId" = m.id
-        )
-        ${this.filterFragment(filters)}
-    `;
+    // Два запроса независимы — гоним параллельно.
+    const [totals, returnsRow] = await Promise.all([
+      this.prisma.$queryRaw<
+        Array<{
+          revenue: string | null;
+          cogs: string | null;
+          transactions: bigint;
+          priced_transactions: bigint;
+          qty: string | null;
+        }>
+      >`
+        SELECT
+          COALESCE(SUM(ABS(m."quantity") * m."unitPrice"), 0)::text AS revenue,
+          COALESCE(SUM(m."totalCost"), 0)::text AS cogs,
+          COUNT(*) AS transactions,
+          COUNT(m."unitPrice") AS priced_transactions,
+          COALESCE(SUM(ABS(m."quantity")), 0)::text AS qty
+        FROM "StockMovement" m
+        LEFT JOIN "ProductVariant" v ON v.id = m."variantId"
+        LEFT JOIN "Product" p ON p.id = v."productId"
+        WHERE m."type" = 'OUT'
+          AND m."createdAt" >= ${from}
+          AND m."createdAt" <= ${to}
+          AND NOT EXISTS (
+            SELECT 1 FROM "StockMovement" r WHERE r."reversesId" = m.id
+          )
+          ${this.filterFragment(filters)}
+      `,
+      this.prisma.$queryRaw<Array<{ count: bigint; qty: string | null }>>`
+        SELECT COUNT(*) AS count,
+               COALESCE(SUM(ABS(r."quantity")), 0)::text AS qty
+        FROM "StockMovement" r
+        JOIN "StockMovement" o ON o.id = r."reversesId"
+        WHERE r."reversesId" IS NOT NULL
+          AND o."type" = 'OUT'
+          AND r."createdAt" >= ${from}
+          AND r."createdAt" <= ${to}
+      `,
+    ]);
 
     const row = totals[0];
     const revenue = Number(row?.revenue ?? 0);
@@ -124,19 +146,6 @@ export class ReportsService {
     const profit = revenue - cogs;
     const marginPct = revenue > 0 ? (profit / revenue) * 100 : 0;
     const avgTicket = transactions > 0 ? revenue / transactions : 0;
-
-    const returnsRow = await this.prisma.$queryRaw<
-      Array<{ count: bigint; qty: string | null }>
-    >`
-      SELECT COUNT(*) AS count,
-             COALESCE(SUM(ABS(r."quantity")), 0)::text AS qty
-      FROM "StockMovement" r
-      JOIN "StockMovement" o ON o.id = r."reversesId"
-      WHERE r."reversesId" IS NOT NULL
-        AND o."type" = 'OUT'
-        AND r."createdAt" >= ${from}
-        AND r."createdAt" <= ${to}
-    `;
 
     return {
       revenue,
