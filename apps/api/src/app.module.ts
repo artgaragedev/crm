@@ -8,6 +8,7 @@ import { UsersModule } from './users/users.module';
 import { ProductsModule } from './products/products.module';
 import { VariantsModule } from './variants/variants.module';
 import { CategoriesModule } from './categories/categories.module';
+import { AttributesModule } from './attributes/attributes.module';
 import { CustomersModule } from './customers/customers.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { StockMovementsModule } from './stock-movements/stock-movements.module';
@@ -31,6 +32,7 @@ import { HealthController } from './health.controller';
     AuthModule,
     UsersModule,
     CategoriesModule,
+    AttributesModule,
     ProductsModule,
     VariantsModule,
     CustomersModule,

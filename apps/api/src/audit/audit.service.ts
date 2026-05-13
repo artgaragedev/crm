@@ -8,7 +8,9 @@ export type AuditEntity =
   | 'Category'
   | 'Lot'
   | 'Customer'
-  | 'Supplier';
+  | 'Supplier'
+  | 'Attribute'
+  | 'AttributeValue';
 
 interface LogParams {
   entity: AuditEntity;

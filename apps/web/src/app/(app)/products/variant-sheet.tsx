@@ -7,7 +7,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { ExternalLink, Package, Pencil, Wand2 } from 'lucide-react';
 import { toast } from 'sonner';
-import type { Variant } from '@art-garage/shared';
+import type { AttributeDto, Variant } from '@art-garage/shared';
 import { api, ApiError, type MovementListItem, type VariantLot } from '@/lib/api';
 import { formatDateTime, formatPrice, formatSigned } from '@/lib/utils';
 import { buildVariantSku } from '@/lib/sku';
@@ -17,6 +17,13 @@ import { MovementTypeBadge } from '@/components/movement-type-badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import {
@@ -39,7 +46,6 @@ const UNIT_LABEL: Record<string, string> = {
 
 const formSchema = z.object({
   sku: z.string().trim().min(1, 'SKU обязателен').max(64),
-  color: z.string().trim().max(50).optional(),
   price: z
     .string()
     .optional()
@@ -70,23 +76,57 @@ export function VariantSheet({ variant, onOpenChange, onSaved }: Props) {
     handleSubmit,
     reset,
     setValue,
-    watch,
     formState: { errors, isDirty },
   } = useForm<FormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: { sku: '', color: '', price: '', reorderLevel: '' },
+    defaultValues: { sku: '', price: '', reorderLevel: '' },
   });
 
-  const colorField = watch('color');
+  // ── Реляционные атрибуты ────────────────────────────────────────────────
+  // attributeValues приходит с сервера: список { attributeId, attributeValueId, attribute, value }.
+  // Для UI редактирования нам нужен ВЕСЬ список значений каждой оси — подгружаем справочник.
+  const [allAttributes, setAllAttributes] = useState<AttributeDto[] | null>(null);
+  const [selectedValueByAxis, setSelectedValueByAxis] = useState<Record<string, string>>({});
+  const [valuesDirty, setValuesDirty] = useState(false);
+
+  useEffect(() => {
+    if (!variant) return;
+    api.attributes
+      .list({ pageSize: 200 })
+      .then((res) => setAllAttributes(res.items))
+      .catch(() => {
+        // не блокируем основной flow — справочник опционально нужен только для select'ов
+      });
+  }, [variant]);
+
+  const axisDescriptors = useMemo(() => {
+    if (!variant || !allAttributes) return [];
+    // Какие оси у этого варианта (через attributeValues), в их же порядке.
+    return (variant.attributeValues ?? []).map((av) => {
+      const fullAttr = allAttributes.find((a) => a.id === av.attributeId);
+      return {
+        attributeId: av.attributeId,
+        attribute: av.attribute ?? null,
+        // Все возможные значения этой оси — из справочника (для select'a).
+        values: fullAttr?.values ?? (av.value ? [av.value] : []),
+      };
+    });
+  }, [variant, allAttributes]);
 
   const handleGenerateSku = () => {
     if (!variant?.product?.code) {
       toast.error('У товара нет артикула');
       return;
     }
+    // Хвосты SKU — коды текущих значений по осям, в порядке axisDescriptors.
+    const parts = axisDescriptors.map((axis) => {
+      const selectedId = selectedValueByAxis[axis.attributeId];
+      const v = axis.values.find((x) => x.id === selectedId);
+      return v?.code ?? v?.value ?? '';
+    });
     setValue(
       'sku',
-      buildVariantSku(variant.product.code, colorField?.trim(), undefined),
+      buildVariantSku(variant.product.code, parts),
       { shouldDirty: true },
     );
   };
@@ -96,7 +136,6 @@ export function VariantSheet({ variant, onOpenChange, onSaved }: Props) {
     if (variant) {
       reset({
         sku: variant.sku,
-        color: variant.attributes?.color ?? '',
         price:
           variant.price !== null && variant.price !== undefined ? String(variant.price) : '',
         reorderLevel:
@@ -104,6 +143,12 @@ export function VariantSheet({ variant, onOpenChange, onSaved }: Props) {
             ? String(variant.reorderLevel)
             : '',
       });
+      const map: Record<string, string> = {};
+      for (const av of variant.attributeValues ?? []) {
+        map[av.attributeId] = av.attributeValueId;
+      }
+      setSelectedValueByAxis(map);
+      setValuesDirty(false);
     }
   }, [variant, reset]);
 
@@ -152,17 +197,21 @@ export function VariantSheet({ variant, onOpenChange, onSaved }: Props) {
     if (!variant) return;
     setSubmitting(true);
 
-    const attributes: Record<string, string> = { ...variant.attributes };
-    if (values.color?.trim()) {
-      attributes.color = values.color.trim();
-    } else {
-      delete attributes.color;
-    }
+    // Если значения по осям меняли — шлём реляционный массив, сервер пересинхронит JSON snapshot.
+    // Иначе вообще не трогаем атрибуты в запросе.
+    const attributeValues = valuesDirty
+      ? axisDescriptors
+          .map((axis) => ({
+            attributeId: axis.attributeId,
+            attributeValueId: selectedValueByAxis[axis.attributeId] ?? '',
+          }))
+          .filter((r) => r.attributeValueId)
+      : undefined;
 
     try {
       await api.variants.update(variant.id, {
         sku: values.sku.trim(),
-        attributes,
+        ...(attributeValues ? { attributeValues } : {}),
         price: values.price ? Number(values.price.replace(',', '.')) : null,
         reorderLevel: values.reorderLevel ? Number(values.reorderLevel) : null,
       });
@@ -254,10 +303,46 @@ export function VariantSheet({ variant, onOpenChange, onSaved }: Props) {
                     <p className="text-xs text-destructive">{errors.sku.message}</p>
                   )}
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="color">Цвет</Label>
-                  <Input id="color" {...register('color')} />
-                </div>
+                {axisDescriptors.map((axis) => {
+                  const attr = axis.attribute;
+                  const selectedId = selectedValueByAxis[axis.attributeId];
+                  return (
+                    <div key={axis.attributeId} className="space-y-1.5">
+                      <Label htmlFor={`axis-${axis.attributeId}`}>
+                        {attr?.name ?? axis.attributeId}
+                      </Label>
+                      <Select
+                        value={selectedId ?? ''}
+                        onValueChange={(v) => {
+                          setSelectedValueByAxis((prev) => ({
+                            ...prev,
+                            [axis.attributeId]: v,
+                          }));
+                          setValuesDirty(true);
+                        }}
+                      >
+                        <SelectTrigger id={`axis-${axis.attributeId}`}>
+                          <SelectValue placeholder="—" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {axis.values.map((v) => (
+                            <SelectItem key={v.id} value={v.id}>
+                              <span className="flex items-center gap-2">
+                                {attr?.type === 'SWATCH' && v.swatch && (
+                                  <span
+                                    className="h-3 w-3 rounded-full border"
+                                    style={{ background: v.swatch }}
+                                  />
+                                )}
+                                {v.label ?? v.value}
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  );
+                })}
                 <div className="space-y-1.5">
                   <Label htmlFor="price">Цена (продажная)</Label>
                   <Input id="price" inputMode="decimal" {...register('price')} />
@@ -286,7 +371,7 @@ export function VariantSheet({ variant, onOpenChange, onSaved }: Props) {
                 >
                   Закрыть
                 </Button>
-                <Button type="submit" disabled={submitting || !isDirty}>
+                <Button type="submit" disabled={submitting || (!isDirty && !valuesDirty)}>
                   {submitting ? 'Сохраняю…' : 'Сохранить'}
                 </Button>
               </div>

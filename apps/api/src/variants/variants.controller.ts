@@ -11,11 +11,13 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import {
+  createProductWithMatrixInputSchema,
   createProductWithVariantInputSchema,
   createVariantInputSchema,
   paginationQuerySchema,
   updateVariantInputSchema,
   type AuthUser,
+  type CreateProductWithMatrixInput,
   type CreateProductWithVariantInput,
   type CreateVariantInput,
   type UpdateVariantInput,
@@ -75,6 +77,15 @@ export class VariantsController {
     input: CreateProductWithVariantInput,
   ) {
     return this.variants.createWithProduct(input, user.id);
+  }
+
+  @Post('with-matrix')
+  createWithMatrix(
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodValidationPipe(createProductWithMatrixInputSchema))
+    input: CreateProductWithMatrixInput,
+  ) {
+    return this.variants.createProductWithMatrix(input, user.id);
   }
 
   @Patch(':id')

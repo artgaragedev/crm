@@ -73,36 +73,42 @@ export function buildProductCode(prefix: string, seq: number): string {
   return `${prefix}${String(seq).padStart(PRODUCT_CODE_DIGITS, '0')}`;
 }
 
+/** Длина одного хвоста значения в SKU. Балансирует читаемость с уникальностью. */
+export const VARIANT_PART_MAX = 10;
+
 /**
- * SKU вариации = артикул товара + хвост из атрибутов: "KRU000001-RED" / "KRU000001-RED-M".
- * Хвосты обрезаются: цвет до 10 символов, размер до 8.
+ * SKU вариации = артикул товара + хвосты из значений атрибутов через "-".
+ *   buildVariantSku("KRU000001", ["RED", "M"])      → "KRU000001-RED-M"
+ *   buildVariantSku("KRU000001", ["ROYALBLUE"])     → "KRU000001-ROYALBLUE"
+ *   buildVariantSku("KRU000001", [])                → "KRU000001"
+ *
+ * Каждое значение санитизируется и обрезается до VARIANT_PART_MAX.
+ * Уникальность гарантируется реляционной уникальностью комбинации значений товара
+ * (на уровне БД — комбинация (productId, набор attributeValueId)), а не суффиксами в SKU.
  */
 export function buildVariantSku(
   productCode: string,
-  color?: string | null,
-  size?: string | null,
+  parts: ReadonlyArray<string | null | undefined>,
 ): string {
-  const colorPart = color ? sanitizeForSku(color).slice(0, 10) : '';
-  const sizePart = size ? sanitizeForSku(size).slice(0, 8) : '';
-  const tail = [colorPart, sizePart].filter(Boolean).join('-');
+  const tail = parts
+    .map((p) => (p ? sanitizeForSku(p).slice(0, VARIANT_PART_MAX) : ''))
+    .filter(Boolean)
+    .join('-');
   return tail ? `${productCode}-${tail}` : productCode;
 }
 
 /**
  * Полный кандидат SKU для предпросмотра в UI:
- *   buildSkuCandidate("Кружка", "RED", undefined, "KRU", 5)
- *     → "KRU000005-RED"
- *   buildSkuCandidate("Кружка", "RED")  // без категории и seq
- *     → "KRU000001-RED" (стаб с seq=1, реальный sequential назначит сервер)
+ *   buildSkuCandidate("Кружка", ["RED"], "KRU", 5)  → "KRU000005-RED"
+ *   buildSkuCandidate("Кружка", ["RED"])            → "KRU000001-RED" (стаб с seq=1)
  */
 export function buildSkuCandidate(
   productName: string,
-  color?: string | null,
-  size?: string | null,
+  parts: ReadonlyArray<string | null | undefined>,
   categoryCode?: string | null,
   seq: number = 1,
 ): string {
   const prefix = buildProductCodePrefix(categoryCode, productName);
   const code = buildProductCode(prefix, seq);
-  return buildVariantSku(code, color, size);
+  return buildVariantSku(code, parts);
 }

@@ -2,10 +2,12 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@prisma/client';
 import {
   buildVariantSku,
+  type CreateProductWithMatrixInput,
   type CreateProductWithVariantInput,
   type CreateVariantInput,
   type PaginationQuery,
   type UpdateVariantInput,
+  type VariantAttributeValueRef,
   type VariantAttributes,
 } from '@art-garage/shared';
 import { PrismaService } from '../prisma/prisma.service';
@@ -20,9 +22,40 @@ type VariantRow = Prisma.ProductVariantGetPayload<{
         _count: { select: { variants: true } };
       };
     };
+    attributeValues: {
+      include: {
+        attribute: true;
+        attributeValue: true;
+      };
+    };
   };
 }>;
 
+const variantInclude = {
+  product: {
+    include: {
+      category: true,
+      _count: { select: { variants: true } },
+    },
+  },
+  attributeValues: {
+    include: {
+      attribute: true,
+      attributeValue: true,
+    },
+  },
+} satisfies Prisma.ProductVariantInclude;
+
+/**
+ * Хранение вариативности — двойная запись:
+ *   1) реляционно: VariantAttributeValue (variantId, attributeId, attributeValueId)
+ *      — источник правды, гарантирует целостность через FK + uniq (variantId, attributeId)
+ *   2) денорм: ProductVariant.attributes JSON ({ "COLOR": "RED", "SIZE": "M" })
+ *      — кэш для быстрого чтения и обратной совместимости со старым UI
+ *
+ * При любой записи: создаём/обновляем обе стороны в одной транзакции.
+ * При чтении: отдаём оба варианта (UI выбирает).
+ */
 @Injectable()
 export class VariantsService {
   constructor(
@@ -56,14 +89,7 @@ export class VariantsService {
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
         orderBy: [{ product: { name: 'asc' } }, { sku: 'asc' }],
-        include: {
-          product: {
-            include: {
-              category: true,
-              _count: { select: { variants: true } },
-            },
-          },
-        },
+        include: variantInclude,
       }),
       this.prisma.productVariant.count({ where }),
     ]);
@@ -81,14 +107,7 @@ export class VariantsService {
   async findOne(id: string) {
     const variant = await this.prisma.productVariant.findUnique({
       where: { id },
-      include: {
-        product: {
-          include: {
-            category: true,
-            _count: { select: { variants: true } },
-          },
-        },
-      },
+      include: variantInclude,
     });
     if (!variant) throw new NotFoundException('Variant not found');
     const stocks = await this.computeStocks([id]);
@@ -97,39 +116,41 @@ export class VariantsService {
 
   async create(input: CreateVariantInput, userId?: string) {
     await this.assertProductExists(input.productId);
-    const normalized = this.normalizeAttributes(input.attributes);
-    await this.assertNoDuplicateAttributes(input.productId, normalized);
-
-    let sku = input.sku?.trim();
-    if (!sku) {
-      // Артикул вариации = product.code + хвост из атрибутов. Если у товара ещё нет code
-      // (наследие или импорт) — выделим его сейчас атомарно.
-      const product = await this.ensureProductCode(input.productId);
-      sku = await this.makeUniqueVariantSku(product.code!, normalized);
-    }
 
     try {
-      const created = await this.prisma.productVariant.create({
-        data: {
-          productId: input.productId,
-          sku,
-          attributes: normalized,
-          price: input.price ?? null,
-          reorderLevel: input.reorderLevel ?? null,
-        },
-        include: {
-          product: {
-            include: {
-              category: true,
-              _count: { select: { variants: true } },
+      const result = await this.prisma.$transaction(async (tx) => {
+        const resolved = await this.resolveAttributes(tx, input);
+        await this.assertNoDuplicateCombination(tx, input.productId, resolved.refs);
+        await this.syncProductAttributes(tx, input.productId, resolved.refs);
+
+        let sku = input.sku?.trim();
+        if (!sku) {
+          const product = await this.ensureProductCode(tx, input.productId);
+          sku = await this.makeUniqueVariantSku(tx, product.code!, resolved.refs);
+        }
+
+        const created = await tx.productVariant.create({
+          data: {
+            productId: input.productId,
+            sku,
+            attributes: resolved.snapshot,
+            price: input.price ?? null,
+            reorderLevel: input.reorderLevel ?? null,
+            attributeValues: {
+              create: resolved.refs.map((r) => ({
+                attributeId: r.attributeId,
+                attributeValueId: r.attributeValueId,
+              })),
             },
           },
-        },
+          include: variantInclude,
+        });
+        return this.serialize(created, 0);
       });
-      const result = this.serialize(created, 0);
+
       await this.audit.log({
         entity: 'Variant',
-        entityId: created.id,
+        entityId: result.id,
         action: 'CREATE',
         userId,
         after: result,
@@ -146,11 +167,8 @@ export class VariantsService {
       await this.assertCategoryExists(input.product.categoryId);
     }
 
-    const variantAttrs = this.normalizeAttributes(input.variant.attributes);
-
     try {
       const result = await this.prisma.$transaction(async (tx) => {
-        // Аллокируем code для нового товара через ProductsService (одна транзакция).
         const code = await this.products.allocateProductCode(
           tx,
           input.product.categoryId ?? null,
@@ -166,26 +184,31 @@ export class VariantsService {
           },
         });
 
+        const resolved = await this.resolveAttributes(tx, {
+          attributeValues: input.variant.attributeValues,
+          attributes: input.variant.attributes,
+        });
+        await this.syncProductAttributes(tx, product.id, resolved.refs);
+
         const sku =
           input.variant.sku?.trim() ||
-          (await this.makeUniqueVariantSku(code, variantAttrs, tx));
+          (await this.makeUniqueVariantSku(tx, code, resolved.refs));
 
         const variant = await tx.productVariant.create({
           data: {
             productId: product.id,
             sku,
-            attributes: variantAttrs,
+            attributes: resolved.snapshot,
             price: input.variant.price ?? null,
             reorderLevel: input.variant.reorderLevel ?? null,
-          },
-          include: {
-            product: {
-              include: {
-                category: true,
-                _count: { select: { variants: true } },
-              },
+            attributeValues: {
+              create: resolved.refs.map((r) => ({
+                attributeId: r.attributeId,
+                attributeValueId: r.attributeValueId,
+              })),
             },
           },
+          include: variantInclude,
         });
 
         return { variant: this.serialize(variant, 0), productId: product.id };
@@ -213,33 +236,205 @@ export class VariantsService {
     }
   }
 
-  async update(id: string, input: UpdateVariantInput, userId?: string) {
-    const before = await this.findOne(id);
+  /**
+   * Создание вариативного товара матрицей: Product + ProductAttribute[] + N вариантов
+   * в одной транзакции. Все варианты валидируются: каждый должен покрывать ровно набор axes.
+   */
+  async createProductWithMatrix(
+    input: CreateProductWithMatrixInput,
+    userId?: string,
+  ) {
+    if (input.product.categoryId) {
+      await this.assertCategoryExists(input.product.categoryId);
+    }
 
-    const normalized =
-      input.attributes !== undefined ? this.normalizeAttributes(input.attributes) : undefined;
-    if (normalized !== undefined) {
-      await this.assertNoDuplicateAttributes(before.productId, normalized, id);
+    // Проверка: каждое axes.attributeId должно существовать; собираем подсказку в Map.
+    const axisIds = input.axes.map((a) => a.attributeId);
+    const attrs = await this.prisma.attribute.findMany({
+      where: { id: { in: axisIds }, deletedAt: null },
+    });
+    if (attrs.length !== axisIds.length) {
+      throw new BadRequestException('Один или несколько атрибутов не найдены');
+    }
+    const axisIdSet = new Set(axisIds);
+
+    // Проверка вариантов: каждый покрывает ровно набор axes, без лишних или недостающих.
+    for (const [i, v] of input.variants.entries()) {
+      const seen = new Set<string>();
+      for (const ref of v.values) {
+        if (!axisIdSet.has(ref.attributeId)) {
+          throw new BadRequestException(
+            `Вариант #${i + 1}: значение по неизвестной оси ${ref.attributeId}`,
+          );
+        }
+        if (seen.has(ref.attributeId)) {
+          throw new BadRequestException(
+            `Вариант #${i + 1}: дубль оси ${ref.attributeId}`,
+          );
+        }
+        seen.add(ref.attributeId);
+      }
+      if (seen.size !== axisIdSet.size) {
+        throw new BadRequestException(
+          `Вариант #${i + 1}: должен покрыть все ${axisIdSet.size} осей, покрыто ${seen.size}`,
+        );
+      }
+    }
+
+    // Проверка уникальности комбинаций внутри матрицы.
+    const combos = new Set<string>();
+    for (const [i, v] of input.variants.entries()) {
+      const key = canonicalCombination(v.values);
+      if (combos.has(key)) {
+        throw new BadRequestException(`Вариант #${i + 1}: дубль комбинации в матрице`);
+      }
+      combos.add(key);
     }
 
     try {
-      const updated = await this.prisma.productVariant.update({
-        where: { id },
-        data: {
-          sku: input.sku,
-          attributes: normalized,
-          price: input.price,
-          reorderLevel: input.reorderLevel,
-        },
-        include: {
-          product: {
-            include: {
-              category: true,
-              _count: { select: { variants: true } },
-            },
+      const result = await this.prisma.$transaction(async (tx) => {
+        const code = await this.products.allocateProductCode(
+          tx,
+          input.product.categoryId ?? null,
+          input.product.name,
+        );
+        const product = await tx.product.create({
+          data: {
+            name: input.product.name,
+            code,
+            unit: input.product.unit,
+            description: input.product.description ?? null,
+            categoryId: input.product.categoryId ?? null,
           },
-        },
+        });
+
+        // ProductAttribute с явным position.
+        for (const axis of input.axes) {
+          await tx.productAttribute.create({
+            data: {
+              productId: product.id,
+              attributeId: axis.attributeId,
+              position: axis.position,
+            },
+          });
+        }
+
+        // Создаём варианты по порядку axes (это и порядок частей SKU).
+        const sortedAxes = [...input.axes].sort((a, b) => a.position - b.position);
+        const createdVariants: VariantRow[] = [];
+        for (const v of input.variants) {
+          const resolved = await this.resolveAttributes(tx, {
+            attributeValues: v.values,
+          });
+          // Упорядочиваем refs по позиции оси для корректного SKU.
+          const orderedRefs = sortedAxes
+            .map((ax) => resolved.refs.find((r) => r.attributeId === ax.attributeId)!)
+            .filter(Boolean);
+          const sku =
+            v.sku?.trim() ||
+            (await this.makeUniqueVariantSku(tx, code, orderedRefs));
+
+          const orderedSnapshot: Prisma.JsonObject = {};
+          for (const r of orderedRefs) orderedSnapshot[r.attributeCode] = r.valueCode;
+
+          const created = await tx.productVariant.create({
+            data: {
+              productId: product.id,
+              sku,
+              attributes: orderedSnapshot,
+              price: v.price ?? null,
+              reorderLevel: v.reorderLevel ?? null,
+              attributeValues: {
+                create: orderedRefs.map((r) => ({
+                  attributeId: r.attributeId,
+                  attributeValueId: r.attributeValueId,
+                })),
+              },
+            },
+            include: variantInclude,
+          });
+          createdVariants.push(created);
+        }
+
+        return { productId: product.id, variants: createdVariants };
       });
+
+      await this.audit.log({
+        entity: 'Product',
+        entityId: result.productId,
+        action: 'CREATE',
+        userId,
+        note: `Создан вариативный товар с ${result.variants.length} вариантами`,
+      });
+      for (const v of result.variants) {
+        await this.audit.log({
+          entity: 'Variant',
+          entityId: v.id,
+          action: 'CREATE',
+          userId,
+        });
+      }
+
+      const stocks = await this.computeStocks(result.variants.map((v) => v.id));
+      return {
+        productId: result.productId,
+        variants: result.variants.map((v) => this.serialize(v, stocks.get(v.id) ?? 0)),
+      };
+    } catch (err) {
+      this.translatePrismaError(err);
+      throw err;
+    }
+  }
+
+  async update(id: string, input: UpdateVariantInput, userId?: string) {
+    const before = await this.findOne(id);
+
+    try {
+      const updated = await this.prisma.$transaction(async (tx) => {
+        // Если клиент прислал хоть что-то, относящееся к атрибутам — пересинхронизируем обе стороны.
+        const wantsAttrChange =
+          input.attributeValues !== undefined || input.attributes !== undefined;
+
+        let snapshot: Prisma.JsonObject | undefined;
+        if (wantsAttrChange) {
+          const resolved = await this.resolveAttributes(tx, {
+            attributeValues: input.attributeValues,
+            attributes: input.attributes,
+          });
+          await this.assertNoDuplicateCombination(
+            tx,
+            before.productId,
+            resolved.refs,
+            id,
+          );
+          await this.syncProductAttributes(tx, before.productId, resolved.refs);
+
+          // Перезаписываем связи: удаляем старые и пишем новые.
+          await tx.variantAttributeValue.deleteMany({ where: { variantId: id } });
+          if (resolved.refs.length > 0) {
+            await tx.variantAttributeValue.createMany({
+              data: resolved.refs.map((r) => ({
+                variantId: id,
+                attributeId: r.attributeId,
+                attributeValueId: r.attributeValueId,
+              })),
+            });
+          }
+          snapshot = resolved.snapshot;
+        }
+
+        return tx.productVariant.update({
+          where: { id },
+          data: {
+            sku: input.sku,
+            attributes: snapshot,
+            price: input.price,
+            reorderLevel: input.reorderLevel,
+          },
+          include: variantInclude,
+        });
+      });
+
       const stocks = await this.computeStocks([id]);
       const result = this.serialize(updated, stocks.get(id) ?? 0);
       await this.audit.log({
@@ -257,10 +452,6 @@ export class VariantsService {
     }
   }
 
-  /**
-   * Удаление вариации. Если на неё есть движения — отказ (Prisma P2003 от Restrict).
-   * Если это была последняя вариация и cascadeProduct=true — удаляем и родительский товар.
-   */
   async remove(id: string, cascadeProduct = false, userId?: string) {
     const variant = await this.prisma.productVariant.findUnique({
       where: { id },
@@ -304,51 +495,219 @@ export class VariantsService {
     }
   }
 
+  // ── helpers (внутренние; используются и из products-matrix) ─────────────
+
   /**
-   * Гарантирует что у товара есть code (артикул). Если нет — атомарно выделяет seq из категории
-   * и проставляет. Возвращает товар с гарантированно непустым code.
+   * Гарантирует что у товара есть code. Если нет — атомарно выделяет seq из категории и проставляет.
    */
-  private async ensureProductCode(productId: string) {
-    const product = await this.prisma.product.findUnique({
+  async ensureProductCode(tx: Prisma.TransactionClient, productId: string) {
+    const product = await tx.product.findUnique({
       where: { id: productId },
       select: { id: true, name: true, code: true, categoryId: true },
     });
     if (!product) throw new NotFoundException('Product not found');
     if (product.code) return product;
-
-    // У товара ещё нет кода (legacy/импорт). Аллокируем сейчас.
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const code = await this.products.allocateProductCode(
-        tx,
-        product.categoryId,
-        product.name,
-      );
-      return tx.product.update({
-        where: { id: product.id },
-        data: { code },
-        select: { id: true, name: true, code: true, categoryId: true },
-      });
+    const code = await this.products.allocateProductCode(
+      tx,
+      product.categoryId,
+      product.name,
+    );
+    return tx.product.update({
+      where: { id: product.id },
+      data: { code },
+      select: { id: true, name: true, code: true, categoryId: true },
     });
-    return updated;
   }
 
   /**
-   * SKU вариации = product.code + variant tail. При коллизии — числовой суффикс.
-   *   "KRU000001-RED" → если занят, "KRU000001-RED-2"
+   * Резолвит набор значений атрибутов из любого из двух источников:
+   *   1) input.attributeValues — реляционные refs (предпочтительно)
+   *   2) input.attributes      — legacy JSON ({ "COLOR": "RED" }) — резолвится через справочник по коду
+   *
+   * Возвращает массив { attributeId, attributeValueId, attributeCode, valueCode }
+   * + JSON-снапшот в денорм-формате для ProductVariant.attributes.
    */
-  private async makeUniqueVariantSku(
+  async resolveAttributes(
+    tx: Prisma.TransactionClient,
+    input: {
+      attributeValues?: ReadonlyArray<VariantAttributeValueRef>;
+      attributes?: VariantAttributes;
+    },
+  ): Promise<{
+    refs: Array<{
+      attributeId: string;
+      attributeValueId: string;
+      attributeCode: string;
+      valueCode: string;
+    }>;
+    snapshot: Prisma.JsonObject;
+  }> {
+    const refs: Array<{
+      attributeId: string;
+      attributeValueId: string;
+      attributeCode: string;
+      valueCode: string;
+    }> = [];
+
+    if (input.attributeValues && input.attributeValues.length > 0) {
+      // Реляционный путь: подгружаем атрибуты и значения, проверяем что они согласованы.
+      const valueIds = input.attributeValues.map((r) => r.attributeValueId);
+      const values = await tx.attributeValue.findMany({
+        where: { id: { in: valueIds }, deletedAt: null },
+        include: { attribute: true },
+      });
+      const byId = new Map(values.map((v) => [v.id, v]));
+      for (const ref of input.attributeValues) {
+        const v = byId.get(ref.attributeValueId);
+        if (!v) {
+          throw new BadRequestException(
+            `Значение атрибута не найдено: ${ref.attributeValueId}`,
+          );
+        }
+        if (v.attributeId !== ref.attributeId) {
+          throw new BadRequestException(
+            `Значение ${v.value} не принадлежит атрибуту ${ref.attributeId}`,
+          );
+        }
+        refs.push({
+          attributeId: v.attributeId,
+          attributeValueId: v.id,
+          attributeCode: v.attribute.code,
+          valueCode: v.code ?? v.value.toUpperCase(),
+        });
+      }
+    } else if (input.attributes && Object.keys(input.attributes).length > 0) {
+      // Legacy путь: { "COLOR": "RED" } → лукапим через справочник по code.
+      // Если значения нет в справочнике — auto-create (мягкое поведение для legacy импорта).
+      for (const [rawKey, rawValue] of Object.entries(input.attributes)) {
+        const value = typeof rawValue === 'string' ? rawValue.trim() : '';
+        if (!value) continue;
+        const attrCode = rawKey.trim().toUpperCase();
+        const attribute = await tx.attribute.findUnique({
+          where: { code: attrCode },
+        });
+        if (!attribute) {
+          throw new BadRequestException(
+            `Неизвестный атрибут "${attrCode}". Создайте его в справочнике или передайте attributeValues.`,
+          );
+        }
+        const valueUpper = value.toUpperCase();
+        let av = await tx.attributeValue.findUnique({
+          where: { attributeId_value: { attributeId: attribute.id, value: valueUpper } },
+        });
+        if (!av) {
+          // Auto-create значения — только для legacy JSON-пути.
+          av = await tx.attributeValue.create({
+            data: {
+              attributeId: attribute.id,
+              value: valueUpper,
+              code: valueUpper.replace(/[^A-Z0-9]+/gu, '_').slice(0, 16) || 'X',
+            },
+          });
+        }
+        refs.push({
+          attributeId: attribute.id,
+          attributeValueId: av.id,
+          attributeCode: attribute.code,
+          valueCode: av.code ?? av.value,
+        });
+      }
+    }
+
+    // Дубль оси — защита (хотя zod уже проверил для attributeValues).
+    const seenAxis = new Set<string>();
+    for (const r of refs) {
+      if (seenAxis.has(r.attributeId)) {
+        throw new BadRequestException('У вариации не может быть двух значений по одной оси');
+      }
+      seenAxis.add(r.attributeId);
+    }
+
+    const snapshot: Prisma.JsonObject = {};
+    for (const r of refs) snapshot[r.attributeCode] = r.valueCode;
+
+    return { refs, snapshot };
+  }
+
+  /**
+   * Не даём создать вторую вариацию того же товара с идентичным набором (attributeId → valueId).
+   * Сравнение по канонической форме (отсортированные пары).
+   */
+  async assertNoDuplicateCombination(
+    tx: Prisma.TransactionClient,
+    productId: string,
+    refs: Array<{ attributeId: string; attributeValueId: string }>,
+    excludeVariantId?: string,
+  ) {
+    const target = canonicalCombination(refs);
+    const siblings = await tx.productVariant.findMany({
+      where: {
+        productId,
+        ...(excludeVariantId ? { NOT: { id: excludeVariantId } } : {}),
+      },
+      select: {
+        id: true,
+        attributeValues: {
+          select: { attributeId: true, attributeValueId: true },
+        },
+      },
+    });
+    const conflict = siblings.find(
+      (v) => canonicalCombination(v.attributeValues) === target,
+    );
+    if (conflict) {
+      throw new BadRequestException(
+        'У этого товара уже есть вариация с такой же комбинацией значений',
+      );
+    }
+  }
+
+  /**
+   * Гарантирует что все упомянутые в вариантах атрибуты привязаны к товару через ProductAttribute.
+   * Position назначается по порядку первого появления.
+   */
+  async syncProductAttributes(
+    tx: Prisma.TransactionClient,
+    productId: string,
+    refs: Array<{ attributeId: string }>,
+  ) {
+    if (refs.length === 0) return;
+    const existing = await tx.productAttribute.findMany({
+      where: { productId },
+      select: { attributeId: true, position: true },
+    });
+    const existingIds = new Set(existing.map((e) => e.attributeId));
+    let nextPosition =
+      existing.reduce((m, e) => Math.max(m, e.position), -1) + 1;
+
+    for (const r of refs) {
+      if (existingIds.has(r.attributeId)) continue;
+      await tx.productAttribute.create({
+        data: {
+          productId,
+          attributeId: r.attributeId,
+          position: nextPosition++,
+        },
+      });
+      existingIds.add(r.attributeId);
+    }
+  }
+
+  /**
+   * SKU вариации = product.code + хвосты из value.code по порядку refs.
+   * При коллизии (теоретически возможной если значение переименовали и совпало с другим SKU) —
+   * добавляем числовой суффикс.
+   */
+  async makeUniqueVariantSku(
+    tx: Prisma.TransactionClient,
     productCode: string,
-    attributes: Prisma.JsonObject,
-    tx?: Prisma.TransactionClient,
+    refs: ReadonlyArray<{ valueCode: string }>,
   ): Promise<string> {
-    const color = typeof attributes.color === 'string' ? attributes.color : null;
-    const size = typeof attributes.size === 'string' ? attributes.size : null;
-    const candidate = buildVariantSku(productCode, color, size);
-    const client = tx ?? this.prisma;
+    const candidate = buildVariantSku(productCode, refs.map((r) => r.valueCode));
     let result = candidate;
     let i = 1;
     while (true) {
-      const exists = await client.productVariant.findUnique({
+      const exists = await tx.productVariant.findUnique({
         where: { sku: result },
         select: { id: true },
       });
@@ -359,59 +718,12 @@ export class VariantsService {
     }
   }
 
-  private normalizeAttributes(attrs: VariantAttributes | undefined): Prisma.JsonObject {
-    if (!attrs) return {};
-    const out: Prisma.JsonObject = {};
-    for (const [k, v] of Object.entries(attrs)) {
-      if (v && typeof v === 'string' && v.trim()) {
-        out[k] = v.trim();
-      }
-    }
-    return out;
-  }
-
-  private async assertExists(id: string) {
-    const exists = await this.prisma.productVariant.findUnique({
-      where: { id },
-      select: { id: true },
-    });
-    if (!exists) throw new NotFoundException('Variant not found');
-  }
-
   private async assertProductExists(productId: string) {
     const exists = await this.prisma.product.findUnique({
       where: { id: productId },
       select: { id: true },
     });
     if (!exists) throw new BadRequestException('Product not found');
-  }
-
-  /**
-   * Не даём создать вторую вариацию того же товара с идентичными атрибутами.
-   * Сравнение по канонической форме (отсортированные ключи + trim values).
-   * Postgres JSON-сравнения через @> + узкая выборка.
-   */
-  private async assertNoDuplicateAttributes(
-    productId: string,
-    attributes: Prisma.JsonObject,
-    excludeId?: string,
-  ) {
-    const sameProduct = await this.prisma.productVariant.findMany({
-      where: {
-        productId,
-        ...(excludeId ? { NOT: { id: excludeId } } : {}),
-      },
-      select: { id: true, attributes: true },
-    });
-    const target = JSON.stringify(canonicalize(attributes));
-    const conflict = sameProduct.find(
-      (v) => JSON.stringify(canonicalize((v.attributes ?? {}) as Prisma.JsonObject)) === target,
-    );
-    if (conflict) {
-      throw new BadRequestException(
-        'У этого товара уже есть вариация с такими же атрибутами',
-      );
-    }
   }
 
   private async assertCategoryExists(categoryId: string) {
@@ -441,6 +753,33 @@ export class VariantsService {
       productId: v.productId,
       sku: v.sku,
       attributes: (v.attributes ?? {}) as VariantAttributes,
+      attributeValues: v.attributeValues.map((av) => ({
+        attributeId: av.attributeId,
+        attributeValueId: av.attributeValueId,
+        attribute: {
+          id: av.attribute.id,
+          name: av.attribute.name,
+          code: av.attribute.code,
+          type: av.attribute.type,
+          unit: av.attribute.unit,
+          sortOrder: av.attribute.sortOrder,
+          deletedAt: av.attribute.deletedAt?.toISOString() ?? null,
+          createdAt: av.attribute.createdAt.toISOString(),
+          updatedAt: av.attribute.updatedAt.toISOString(),
+        },
+        value: {
+          id: av.attributeValue.id,
+          attributeId: av.attributeValue.attributeId,
+          value: av.attributeValue.value,
+          label: av.attributeValue.label,
+          code: av.attributeValue.code,
+          swatch: av.attributeValue.swatch,
+          sortOrder: av.attributeValue.sortOrder,
+          deletedAt: av.attributeValue.deletedAt?.toISOString() ?? null,
+          createdAt: av.attributeValue.createdAt.toISOString(),
+          updatedAt: av.attributeValue.updatedAt.toISOString(),
+        },
+      })),
       price: v.price ? Number(v.price) : null,
       reorderLevel: v.reorderLevel ?? null,
       currentStock,
@@ -491,12 +830,13 @@ export class VariantsService {
   }
 }
 
-/** Каноническая форма JSON-объекта: ключи отсортированы, значения trim'ы. */
-function canonicalize(obj: Record<string, unknown>): Record<string, unknown> {
-  const sorted: Record<string, unknown> = {};
-  for (const k of Object.keys(obj).sort()) {
-    const v = obj[k];
-    sorted[k] = typeof v === 'string' ? v.trim() : v;
-  }
-  return sorted;
+/** Каноническая форма комбинации значений: "attrA=valA|attrB=valB" с отсортированными парами. */
+function canonicalCombination(
+  refs: ReadonlyArray<{ attributeId: string; attributeValueId: string }>,
+): string {
+  return refs
+    .slice()
+    .sort((a, b) => a.attributeId.localeCompare(b.attributeId))
+    .map((r) => `${r.attributeId}=${r.attributeValueId}`)
+    .join('|');
 }

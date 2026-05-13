@@ -41,6 +41,7 @@ import {
 import { VariantCreateDialog } from './variant-create-dialog';
 import { VariantSheet } from './variant-sheet';
 import { ImportDialog } from './import-dialog';
+import { VariantMatrixWizard } from './variant-matrix-wizard';
 
 const PAGE_SIZE = 25;
 const ALL_CATEGORIES = '__all__';
@@ -63,6 +64,7 @@ export default function ProductsPage() {
   const [categories, setCategories] = useState<CategoryListItem[]>([]);
 
   const [creating, setCreating] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [editing, setEditing] = useState<Variant | null>(null);
   const [deleting, setDeleting] = useState<Variant | null>(null);
   const [importing, setImporting] = useState(false);
@@ -125,8 +127,11 @@ export default function ProductsPage() {
         description="Каждая строка — вариация (свой SKU, цена, остаток). Один товар может иметь несколько вариаций (цвет, размер и т.д.)."
         actions={
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => setCreating(true)}>
-              <Plus className="mr-2 h-4 w-4" /> Создать
+            <Button onClick={() => setWizardOpen(true)}>
+              <Plus className="mr-2 h-4 w-4" /> Вариативный товар
+            </Button>
+            <Button variant="outline" onClick={() => setCreating(true)}>
+              <Plus className="mr-2 h-4 w-4" /> Простой
             </Button>
             <Button variant="outline" onClick={() => setImporting(true)}>
               <Upload className="mr-2 h-4 w-4" /> Импорт
@@ -288,6 +293,15 @@ export default function ProductsPage() {
         categories={categories}
         onSaved={() => {
           setCreating(false);
+          reload();
+        }}
+      />
+      <VariantMatrixWizard
+        open={wizardOpen}
+        onOpenChange={setWizardOpen}
+        categories={categories}
+        onSaved={() => {
+          setWizardOpen(false);
           reload();
         }}
       />

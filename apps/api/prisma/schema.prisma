@@ -34,6 +34,13 @@ enum AuditAction {
   RESTORE
 }
 
+/// Тип значения атрибута. TEXT — обычная строка (M, L, "Стекло"); SWATCH — визуальный (цвет с hex); NUMBER — числовое (объём, вес — храним как строку с unit'ом).
+enum AttributeType {
+  TEXT
+  SWATCH
+  NUMBER
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -97,8 +104,9 @@ model Product {
   updatedAt   DateTime    @updatedAt
   deletedAt   DateTime?
 
-  category Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  variants ProductVariant[]
+  category   Category?          @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  variants   ProductVariant[]
+  attributes ProductAttribute[]
 
   @@index([categoryId])
   @@index([name])
@@ -106,7 +114,7 @@ model Product {
 }
 
 // Вариация товара. У каждой свой SKU, цена и остаток.
-// attributes хранит дополнительные характеристики ({ "color": "BLACK", "size": "M" }).
+// attributes — JSON-снапшот (denorm cache: { "COLOR": "BLACK", "SIZE": "M" }), источник правды — VariantAttributeValue.
 model ProductVariant {
   id           String   @id @default(cuid())
   productId    String
@@ -116,13 +124,95 @@ model ProductVariant {
   price        Decimal? @db.Decimal(12, 2)
   reorderLevel Int? // если null — используется глобальный порог дашборда
   createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  updatedAt   DateTime @updatedAt
 
-  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
-  movements StockMovement[]
-  lots      StockLot[]
+  product         Product                  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  movements       StockMovement[]
+  lots            StockLot[]
+  attributeValues VariantAttributeValue[]
 
   @@index([productId])
+}
+
+/// Тип оси вариативности: "Цвет" (COLOR), "Размер" (SIZE), "Объём" (VOLUME), "Материал" (MATERIAL).
+/// Глобальный справочник: один Attribute используется во многих товарах.
+model Attribute {
+  id        String        @id @default(cuid())
+  /** Человекочитаемое имя: "Цвет", "Размер". Уникально. */
+  name      String        @unique
+  /** Короткий машинный код: COLOR, SIZE. Используется в SKU как префикс и в API. Uppercase, A-Z0-9. */
+  code      String        @unique
+  type      AttributeType @default(TEXT)
+  /** Единица измерения для type=NUMBER ("мл", "г", "см"). Опционально. */
+  unit      String?
+  sortOrder Int           @default(0)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  deletedAt DateTime?
+
+  values            AttributeValue[]
+  productAttributes ProductAttribute[]
+  variantValues     VariantAttributeValue[]
+
+  @@index([deletedAt])
+}
+
+/// Допустимое значение оси: RED для COLOR, M для SIZE, 500 для VOLUME (с unit "мл").
+/// Уникальность в рамках атрибута: (attributeId, value) и (attributeId, code).
+model AttributeValue {
+  id          String @id @default(cuid())
+  attributeId String
+  /** Нормализованное значение (UPPER, без пробелов): "RED", "ROYAL_BLUE", "500". Источник правды. */
+  value       String
+  /** Человекочитаемая подпись для UI: "Красный", "500 мл". Опционально (по умолчанию value). */
+  label       String?
+  /** Короткий код для SKU: обычно совпадает с value, но может быть короче (RED→R). Опционально (по умолчанию value). */
+  code        String?
+  /** Для type=SWATCH — hex-цвет (#dc2626) или URL картинки. */
+  swatch      String?
+  sortOrder   Int    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  attribute     Attribute               @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  variantValues VariantAttributeValue[]
+
+  @@unique([attributeId, value])
+  @@unique([attributeId, code])
+  @@index([attributeId, sortOrder])
+  @@index([deletedAt])
+}
+
+/// "У товара X используется ось Y". Управляет: набором осей товара, порядком осей в SKU и UI.
+model ProductAttribute {
+  productId   String
+  attributeId String
+  /** Порядок оси в SKU и формах. 0 = первая. */
+  position    Int    @default(0)
+  createdAt   DateTime @default(now())
+
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  attribute Attribute @relation(fields: [attributeId], references: [id], onDelete: Restrict)
+
+  @@id([productId, attributeId])
+  @@index([attributeId])
+}
+
+/// "У варианта V значение Z по оси Y". Гарантия: один вариант — одно значение на ось.
+model VariantAttributeValue {
+  variantId        String
+  attributeId      String
+  attributeValueId String
+  createdAt        DateTime @default(now())
+
+  variant        ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  attribute      Attribute      @relation(fields: [attributeId], references: [id], onDelete: Restrict)
+  attributeValue AttributeValue @relation(fields: [attributeValueId], references: [id], onDelete: Restrict)
+
+  @@id([variantId, attributeId])
+  @@index([attributeValueId])
+  @@index([attributeId])
 }
 
 model Customer {

@@ -116,7 +116,7 @@ export function VariantCreateDialog({ open, onOpenChange, categories, onSaved }:
     if (formMode === 'existing') {
       const p = products.find((pp) => pp.id === productId);
       if (!p?.code) return '';
-      return buildVariantSku(p.code, colorField?.trim(), undefined);
+      return buildVariantSku(p.code, [colorField?.trim()]);
     }
     const productName = (productNameField ?? '').trim();
     if (!productName) return '';
@@ -124,8 +124,7 @@ export function VariantCreateDialog({ open, onOpenChange, categories, onSaved }:
     const seq = cat?.nextProductSeq ?? 1;
     return buildSkuCandidate(
       productName,
-      colorField?.trim(),
-      undefined,
+      [colorField?.trim()],
       cat?.code ?? null,
       seq,
     );

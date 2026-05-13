@@ -17,6 +17,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "prisma:seed": "prisma db seed",
+    "prisma:backfill-attributes": "ts-node --transpile-only prisma/backfill-attributes.ts",
     "postinstall": "prisma generate || true"
   },
   "prisma": {

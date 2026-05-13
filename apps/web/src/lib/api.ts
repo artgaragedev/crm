@@ -1,11 +1,15 @@
 import type {
+  AttributeDto,
   AuthResponse,
   AuthUser,
   Category,
+  CreateAttributeInput,
+  CreateAttributeValueInput,
   CreateCategoryInput,
   CreateCustomerInput,
   CreateMovementBatchInput,
   CreateProductInput,
+  CreateProductWithMatrixInput,
   CreateProductWithVariantInput,
   CreateStockMovementInput,
   CreateSupplierInput,
@@ -15,6 +19,8 @@ import type {
   Product,
   ProductUnit,
   Supplier,
+  UpdateAttributeInput,
+  UpdateAttributeValueInput,
   UpdateCategoryInput,
   UpdateCustomerInput,
   UpdateProductInput,
@@ -22,6 +28,7 @@ import type {
   UpdateVariantInput,
   Variant,
   VariantAttributes,
+  AttributeValueDto,
 } from '@art-garage/shared';
 import { getAuthToken } from './auth-store';
 
@@ -398,6 +405,39 @@ export const api = {
     request<AuthResponse>('/auth/login', { method: 'POST', body: input }),
   me: () => request<AuthUser>('/auth/me'),
 
+  attributes: {
+    list: (query?: {
+      page?: number;
+      pageSize?: number;
+      search?: string;
+      includeDeleted?: boolean;
+    }) =>
+      request<PaginatedResponse<AttributeDto>>('/attributes', {
+        query: { ...query, includeDeleted: query?.includeDeleted ? 'true' : undefined },
+      }),
+    findOne: (id: string) => request<AttributeDto>(`/attributes/${id}`),
+    create: (input: CreateAttributeInput) =>
+      request<AttributeDto>('/attributes', { method: 'POST', body: input }),
+    update: (id: string, input: UpdateAttributeInput) =>
+      request<AttributeDto>(`/attributes/${id}`, { method: 'PATCH', body: input }),
+    remove: (id: string) => request<void>(`/attributes/${id}`, { method: 'DELETE' }),
+    restore: (id: string) =>
+      request<AttributeDto>(`/attributes/${id}/restore`, { method: 'POST' }),
+
+    createValue: (attributeId: string, input: CreateAttributeValueInput) =>
+      request<AttributeValueDto>(`/attributes/${attributeId}/values`, {
+        method: 'POST',
+        body: input,
+      }),
+    updateValue: (valueId: string, input: UpdateAttributeValueInput) =>
+      request<AttributeValueDto>(`/attributes/values/${valueId}`, {
+        method: 'PATCH',
+        body: input,
+      }),
+    removeValue: (valueId: string) =>
+      request<void>(`/attributes/values/${valueId}`, { method: 'DELETE' }),
+  },
+
   categories: {
     list: (query?: {
       page?: number;
@@ -600,6 +640,11 @@ export const api = {
       request<Variant>('/variants', { method: 'POST', body: input }),
     createWithProduct: (input: CreateProductWithVariantInput) =>
       request<Variant>('/variants/with-product', { method: 'POST', body: input }),
+    createWithMatrix: (input: CreateProductWithMatrixInput) =>
+      request<{ productId: string; variants: Variant[] }>('/variants/with-matrix', {
+        method: 'POST',
+        body: input,
+      }),
     update: (id: string, input: UpdateVariantInput) =>
       request<Variant>(`/variants/${id}`, { method: 'PATCH', body: input }),
     remove: (id: string, opts?: { cascadeProduct?: boolean }) =>
