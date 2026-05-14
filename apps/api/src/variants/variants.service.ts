@@ -168,51 +168,54 @@ export class VariantsService {
     }
 
     try {
-      const result = await this.prisma.$transaction(async (tx) => {
-        const code = await this.products.allocateProductCode(
-          tx,
-          input.product.categoryId ?? null,
-          input.product.name,
-        );
-        const product = await tx.product.create({
-          data: {
-            name: input.product.name,
-            code,
-            unit: input.product.unit,
-            description: input.product.description ?? null,
-            categoryId: input.product.categoryId ?? null,
-          },
-        });
-
-        const resolved = await this.resolveAttributes(tx, {
-          attributeValues: input.variant.attributeValues,
-          attributes: input.variant.attributes,
-        });
-        await this.syncProductAttributes(tx, product.id, resolved.refs);
-
-        const sku =
-          input.variant.sku?.trim() ||
-          (await this.makeUniqueVariantSku(tx, code, resolved.refs));
-
-        const variant = await tx.productVariant.create({
-          data: {
-            productId: product.id,
-            sku,
-            attributes: resolved.snapshot,
-            price: input.variant.price ?? null,
-            reorderLevel: input.variant.reorderLevel ?? null,
-            attributeValues: {
-              create: resolved.refs.map((r) => ({
-                attributeId: r.attributeId,
-                attributeValueId: r.attributeValueId,
-              })),
+      const result = await this.prisma.$transaction(
+        async (tx) => {
+          const code = await this.products.allocateProductCode(
+            tx,
+            input.product.categoryId ?? null,
+            input.product.name,
+          );
+          const product = await tx.product.create({
+            data: {
+              name: input.product.name,
+              code,
+              unit: input.product.unit,
+              description: input.product.description ?? null,
+              categoryId: input.product.categoryId ?? null,
             },
-          },
-          include: variantInclude,
-        });
+          });
 
-        return { variant: this.serialize(variant, 0), productId: product.id };
-      });
+          const resolved = await this.resolveAttributes(tx, {
+            attributeValues: input.variant.attributeValues,
+            attributes: input.variant.attributes,
+          });
+          await this.syncProductAttributes(tx, product.id, resolved.refs);
+
+          const sku =
+            input.variant.sku?.trim() ||
+            (await this.makeUniqueVariantSku(tx, code, resolved.refs));
+
+          const variant = await tx.productVariant.create({
+            data: {
+              productId: product.id,
+              sku,
+              attributes: resolved.snapshot,
+              price: input.variant.price ?? null,
+              reorderLevel: input.variant.reorderLevel ?? null,
+              attributeValues: {
+                create: resolved.refs.map((r) => ({
+                  attributeId: r.attributeId,
+                  attributeValueId: r.attributeValueId,
+                })),
+              },
+            },
+            include: variantInclude,
+          });
+
+          return { variant: this.serialize(variant, 0), productId: product.id };
+        },
+        { maxWait: 10_000, timeout: 30_000 },
+      );
 
       await this.audit.log({
         entity: 'Product',
@@ -292,81 +295,89 @@ export class VariantsService {
     }
 
     try {
-      const result = await this.prisma.$transaction(async (tx) => {
-        const code = await this.products.allocateProductCode(
-          tx,
-          input.product.categoryId ?? null,
-          input.product.name,
-        );
-        const product = await tx.product.create({
-          data: {
-            name: input.product.name,
-            code,
-            unit: input.product.unit,
-            description: input.product.description ?? null,
-            categoryId: input.product.categoryId ?? null,
-          },
-        });
-
-        // ProductAttribute с явным position.
-        for (const axis of input.axes) {
-          await tx.productAttribute.create({
+      const result = await this.prisma.$transaction(
+        async (tx) => {
+          const code = await this.products.allocateProductCode(
+            tx,
+            input.product.categoryId ?? null,
+            input.product.name,
+          );
+          const product = await tx.product.create({
             data: {
+              name: input.product.name,
+              code,
+              unit: input.product.unit,
+              description: input.product.description ?? null,
+              categoryId: input.product.categoryId ?? null,
+            },
+          });
+
+          await tx.productAttribute.createMany({
+            data: input.axes.map((axis) => ({
               productId: product.id,
               attributeId: axis.attributeId,
               position: axis.position,
-            },
+            })),
           });
-        }
 
-        // Создаём варианты по порядку axes (это и порядок частей SKU).
-        const sortedAxes = [...input.axes].sort((a, b) => a.position - b.position);
-        const createdVariants: VariantRow[] = [];
-        for (const v of input.variants) {
-          const resolved = await this.resolveAttributes(tx, {
-            attributeValues: v.values,
-          });
-          // Упорядочиваем refs по позиции оси для корректного SKU.
-          const orderedRefs = sortedAxes
-            .map((ax) => resolved.refs.find((r) => r.attributeId === ax.attributeId)!)
-            .filter(Boolean);
-          const sku =
-            v.sku?.trim() ||
-            (await this.makeUniqueVariantSku(tx, code, orderedRefs));
+          // Создаём варианты по порядку axes (это и порядок частей SKU).
+          const sortedAxes = [...input.axes].sort((a, b) => a.position - b.position);
+          const createdIds: string[] = [];
+          for (const v of input.variants) {
+            const resolved = await this.resolveAttributes(tx, {
+              attributeValues: v.values,
+            });
+            const orderedRefs = sortedAxes
+              .map((ax) => resolved.refs.find((r) => r.attributeId === ax.attributeId)!)
+              .filter(Boolean);
+            const sku =
+              v.sku?.trim() ||
+              (await this.makeUniqueVariantSku(tx, code, orderedRefs));
 
-          const orderedSnapshot: Prisma.JsonObject = {};
-          for (const r of orderedRefs) orderedSnapshot[r.attributeCode] = r.valueCode;
+            const orderedSnapshot: Prisma.JsonObject = {};
+            for (const r of orderedRefs) orderedSnapshot[r.attributeCode] = r.valueCode;
 
-          const created = await tx.productVariant.create({
-            data: {
-              productId: product.id,
-              sku,
-              attributes: orderedSnapshot,
-              price: v.price ?? null,
-              reorderLevel: v.reorderLevel ?? null,
-              attributeValues: {
-                create: orderedRefs.map((r) => ({
-                  attributeId: r.attributeId,
-                  attributeValueId: r.attributeValueId,
-                })),
+            const created = await tx.productVariant.create({
+              data: {
+                productId: product.id,
+                sku,
+                attributes: orderedSnapshot,
+                price: v.price ?? null,
+                reorderLevel: v.reorderLevel ?? null,
+                attributeValues: {
+                  create: orderedRefs.map((r) => ({
+                    attributeId: r.attributeId,
+                    attributeValueId: r.attributeValueId,
+                  })),
+                },
               },
-            },
-            include: variantInclude,
-          });
-          createdVariants.push(created);
-        }
+              select: { id: true },
+            });
+            createdIds.push(created.id);
+          }
 
-        return { productId: product.id, variants: createdVariants };
+          return { productId: product.id, variantIds: createdIds };
+        },
+        { maxWait: 10_000, timeout: 60_000 },
+      );
+
+      const variants = await this.prisma.productVariant.findMany({
+        where: { id: { in: result.variantIds } },
+        include: variantInclude,
       });
+      const variantsById = new Map(variants.map((v) => [v.id, v]));
+      const orderedVariants = result.variantIds
+        .map((id) => variantsById.get(id))
+        .filter((v): v is VariantRow => Boolean(v));
 
       await this.audit.log({
         entity: 'Product',
         entityId: result.productId,
         action: 'CREATE',
         userId,
-        note: `Создан вариативный товар с ${result.variants.length} вариантами`,
+        note: `Создан вариативный товар с ${orderedVariants.length} вариантами`,
       });
-      for (const v of result.variants) {
+      for (const v of orderedVariants) {
         await this.audit.log({
           entity: 'Variant',
           entityId: v.id,
@@ -375,10 +386,10 @@ export class VariantsService {
         });
       }
 
-      const stocks = await this.computeStocks(result.variants.map((v) => v.id));
+      const stocks = await this.computeStocks(orderedVariants.map((v) => v.id));
       return {
         productId: result.productId,
-        variants: result.variants.map((v) => this.serialize(v, stocks.get(v.id) ?? 0)),
+        variants: orderedVariants.map((v) => this.serialize(v, stocks.get(v.id) ?? 0)),
       };
     } catch (err) {
       this.translatePrismaError(err);
