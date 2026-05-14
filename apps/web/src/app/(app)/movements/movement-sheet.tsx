@@ -353,6 +353,7 @@ export function MovementSheet({ type, onClose, variants, suppliers, customers, o
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
       <SheetContent
         side="right"
+        dismissible={false}
         className="flex w-full flex-col gap-0 p-0 sm:max-w-none md:w-[720px] lg:w-[820px]"
       >
         <SheetHeader className="flex-row items-start gap-3 border-b p-6">
