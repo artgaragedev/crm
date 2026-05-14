@@ -5,6 +5,7 @@ import {
   type CreateProductWithMatrixInput,
   type CreateProductWithVariantInput,
   type CreateVariantInput,
+  type ExtendProductWithMatrixInput,
   type PaginationQuery,
   type UpdateVariantInput,
   type VariantAttributeValueRef,
@@ -393,6 +394,210 @@ export class VariantsService {
         action: 'CREATE',
         userId,
         note: `Создан вариативный товар с ${orderedVariants.length} вариантами`,
+      });
+      for (const v of orderedVariants) {
+        await this.audit.log({
+          entity: 'Variant',
+          entityId: v.id,
+          action: 'CREATE',
+          userId,
+        });
+      }
+
+      const stocks = await this.computeStocks(orderedVariants.map((v) => v.id));
+      return {
+        productId: result.productId,
+        variants: orderedVariants.map((v) => this.serialize(v, stocks.get(v.id) ?? 0)),
+      };
+    } catch (err) {
+      this.translatePrismaError(err);
+      throw err;
+    }
+  }
+
+  /**
+   * Расширение существующего вариативного товара матрицей: добавляет недостающие оси (ProductAttribute)
+   * и новые вариации в одной транзакции. Существующие оси/вариации не трогаются.
+   *
+   * Контракт:
+   *   - input.axes — полный набор осей после операции. Убрать существующую ось нельзя.
+   *   - input.variants — только НОВЫЕ варианты; pre-check падает, если комбинация уже есть у товара.
+   */
+  async extendProductWithMatrix(
+    input: ExtendProductWithMatrixInput,
+    userId?: string,
+  ) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: input.productId },
+      select: {
+        id: true,
+        name: true,
+        deletedAt: true,
+        attributes: {
+          select: {
+            attributeId: true,
+            position: true,
+            attribute: { select: { name: true } },
+          },
+        },
+      },
+    });
+    if (!product) throw new BadRequestException('Товар не найден');
+    if (product.deletedAt) throw new BadRequestException('Нельзя расширять удалённый товар');
+
+    // Все axes из input.axes должны существовать в справочнике.
+    const inputAxisIds = input.axes.map((a) => a.attributeId);
+    const attrs = await this.prisma.attribute.findMany({
+      where: { id: { in: inputAxisIds }, deletedAt: null },
+    });
+    if (attrs.length !== inputAxisIds.length) {
+      throw new BadRequestException('Один или несколько атрибутов не найдены');
+    }
+
+    // Запрещаем убирать существующую ось — у товара по ней есть варианты.
+    const inputAxisIdSet = new Set(inputAxisIds);
+    for (const existing of product.attributes) {
+      if (!inputAxisIdSet.has(existing.attributeId)) {
+        throw new BadRequestException(
+          `Нельзя убрать ось "${existing.attribute.name}" — у товара уже есть вариации по ней`,
+        );
+      }
+    }
+
+    // Каждый variant покрывает ровно набор axes.
+    for (const [i, v] of input.variants.entries()) {
+      const seen = new Set<string>();
+      for (const ref of v.values) {
+        if (!inputAxisIdSet.has(ref.attributeId)) {
+          throw new BadRequestException(
+            `Вариант #${i + 1}: значение по неизвестной оси ${ref.attributeId}`,
+          );
+        }
+        if (seen.has(ref.attributeId)) {
+          throw new BadRequestException(`Вариант #${i + 1}: дубль оси ${ref.attributeId}`);
+        }
+        seen.add(ref.attributeId);
+      }
+      if (seen.size !== inputAxisIdSet.size) {
+        throw new BadRequestException(
+          `Вариант #${i + 1}: должен покрыть все ${inputAxisIdSet.size} осей, покрыто ${seen.size}`,
+        );
+      }
+    }
+
+    // Уникальность внутри input.variants.
+    const combosLocal = new Set<string>();
+    for (const [i, v] of input.variants.entries()) {
+      const key = canonicalCombination(v.values);
+      if (combosLocal.has(key)) {
+        throw new BadRequestException(`Вариант #${i + 1}: дубль комбинации в матрице`);
+      }
+      combosLocal.add(key);
+    }
+
+    // Pre-check: ни одна новая комбинация не должна совпадать с существующими у товара.
+    // Это быстрый отказ с понятным сообщением; tx ниже всё равно повторно проверит через assertNoDuplicateCombination.
+    const existingVariants = await this.prisma.productVariant.findMany({
+      where: { productId: input.productId },
+      select: {
+        attributeValues: { select: { attributeId: true, attributeValueId: true } },
+      },
+    });
+    const existingCombos = new Set(
+      existingVariants.map((v) => canonicalCombination(v.attributeValues)),
+    );
+    for (const [i, v] of input.variants.entries()) {
+      if (existingCombos.has(canonicalCombination(v.values))) {
+        throw new BadRequestException(
+          `Вариант #${i + 1}: такая комбинация значений уже существует у этого товара`,
+        );
+      }
+    }
+
+    try {
+      const result = await this.prisma.$transaction(
+        async (tx) => {
+          // Гарантируем что у товара есть code (нужен для SKU).
+          const productWithCode = await this.ensureProductCode(tx, input.productId);
+
+          // Добавляем недостающие оси. Existing positions не трогаем — это сломало бы SKU существующих вариантов.
+          const existingAxisIds = new Set(product.attributes.map((a) => a.attributeId));
+          const maxExistingPos = product.attributes.reduce(
+            (m, a) => Math.max(m, a.position),
+            -1,
+          );
+          let nextPos = maxExistingPos + 1;
+          for (const ax of input.axes) {
+            if (existingAxisIds.has(ax.attributeId)) continue;
+            await tx.productAttribute.create({
+              data: {
+                productId: input.productId,
+                attributeId: ax.attributeId,
+                position: Math.max(ax.position, nextPos),
+              },
+            });
+            nextPos = Math.max(nextPos, ax.position) + 1;
+          }
+
+          const sortedAxes = [...input.axes].sort((a, b) => a.position - b.position);
+          const createdIds: string[] = [];
+
+          for (const v of input.variants) {
+            const resolved = await this.resolveAttributes(tx, {
+              attributeValues: v.values,
+            });
+            // Финальная проверка: пересечения с существующими + уже созданными в этой tx.
+            await this.assertNoDuplicateCombination(tx, input.productId, resolved.refs);
+
+            const orderedRefs = sortedAxes
+              .map((ax) => resolved.refs.find((r) => r.attributeId === ax.attributeId)!)
+              .filter(Boolean);
+            const sku =
+              v.sku?.trim() ||
+              (await this.makeUniqueVariantSku(tx, productWithCode.code!, orderedRefs));
+
+            const orderedSnapshot: Prisma.JsonObject = {};
+            for (const r of orderedRefs) orderedSnapshot[r.attributeCode] = r.valueCode;
+
+            const created = await tx.productVariant.create({
+              data: {
+                productId: input.productId,
+                sku,
+                attributes: orderedSnapshot,
+                price: v.price ?? null,
+                reorderLevel: v.reorderLevel ?? null,
+                attributeValues: {
+                  create: orderedRefs.map((r) => ({
+                    attributeId: r.attributeId,
+                    attributeValueId: r.attributeValueId,
+                  })),
+                },
+              },
+              select: { id: true },
+            });
+            createdIds.push(created.id);
+          }
+
+          return { productId: input.productId, variantIds: createdIds };
+        },
+        { maxWait: 10_000, timeout: 60_000 },
+      );
+
+      const variants = await this.prisma.productVariant.findMany({
+        where: { id: { in: result.variantIds } },
+        include: variantInclude,
+      });
+      const variantsById = new Map(variants.map((v) => [v.id, v]));
+      const orderedVariants = result.variantIds
+        .map((id) => variantsById.get(id))
+        .filter((v): v is VariantRow => Boolean(v));
+
+      await this.audit.log({
+        entity: 'Product',
+        entityId: result.productId,
+        action: 'UPDATE',
+        userId,
+        note: `Расширена матрица: +${orderedVariants.length} вариаций`,
       });
       for (const v of orderedVariants) {
         await this.audit.log({

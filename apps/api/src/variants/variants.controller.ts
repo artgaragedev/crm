@@ -14,12 +14,14 @@ import {
   createProductWithMatrixInputSchema,
   createProductWithVariantInputSchema,
   createVariantInputSchema,
+  extendProductWithMatrixInputSchema,
   paginationQuerySchema,
   updateVariantInputSchema,
   type AuthUser,
   type CreateProductWithMatrixInput,
   type CreateProductWithVariantInput,
   type CreateVariantInput,
+  type ExtendProductWithMatrixInput,
   type UpdateVariantInput,
 } from '@art-garage/shared';
 import { ZodValidationPipe } from '../common/zod.dto';
@@ -86,6 +88,15 @@ export class VariantsController {
     input: CreateProductWithMatrixInput,
   ) {
     return this.variants.createProductWithMatrix(input, user.id);
+  }
+
+  @Post('extend-matrix')
+  extendWithMatrix(
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodValidationPipe(extendProductWithMatrixInputSchema))
+    input: ExtendProductWithMatrixInput,
+  ) {
+    return this.variants.extendProductWithMatrix(input, user.id);
   }
 
   @Patch(':id')

@@ -11,6 +11,7 @@ import type {
   CreateProductInput,
   CreateProductWithMatrixInput,
   CreateProductWithVariantInput,
+  ExtendProductWithMatrixInput,
   CreateStockMovementInput,
   CreateSupplierInput,
   CreateVariantInput,
@@ -642,6 +643,11 @@ export const api = {
       request<Variant>('/variants/with-product', { method: 'POST', body: input }),
     createWithMatrix: (input: CreateProductWithMatrixInput) =>
       request<{ productId: string; variants: Variant[] }>('/variants/with-matrix', {
+        method: 'POST',
+        body: input,
+      }),
+    extendWithMatrix: (input: ExtendProductWithMatrixInput) =>
+      request<{ productId: string; variants: Variant[] }>('/variants/extend-matrix', {
         method: 'POST',
         body: input,
       }),

@@ -131,3 +131,39 @@ export const createProductWithMatrixInputSchema = z.object({
     .min(1),
 });
 export type CreateProductWithMatrixInput = z.infer<typeof createProductWithMatrixInputSchema>;
+
+/**
+ * Расширение существующего вариативного товара матрицей в одной транзакции:
+ * добавляет недостающие оси (ProductAttribute) и новые вариации (ProductVariant).
+ *
+ *   - productId: к какому товару добавляем.
+ *   - axes:     полный набор осей у товара ПОСЛЕ операции (включая уже существующие).
+ *               Существующие — будут оставлены, новые — заведены.
+ *   - variants: только НОВЫЕ варианты. Pre-check падает, если комбинация совпадает с уже существующей.
+ */
+export const extendProductWithMatrixInputSchema = z.object({
+  productId: z.string().min(1),
+  axes: z
+    .array(
+      z.object({
+        attributeId: z.string().min(1),
+        position: z.number().int().nonnegative(),
+      }),
+    )
+    .min(1)
+    .refine(
+      (arr) => new Set(arr.map((a) => a.attributeId)).size === arr.length,
+      'Дубль оси в axes',
+    ),
+  variants: z
+    .array(
+      z.object({
+        values: variantAttributeValuesArraySchema,
+        sku: z.string().trim().max(64).optional(),
+        price: z.number().nonnegative().optional().nullable(),
+        reorderLevel: z.number().int().nonnegative().optional().nullable(),
+      }),
+    )
+    .min(1),
+});
+export type ExtendProductWithMatrixInput = z.infer<typeof extendProductWithMatrixInputSchema>;
