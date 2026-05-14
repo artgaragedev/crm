@@ -88,6 +88,8 @@ export function Combobox({
       <PopoverContent
         className={cn('w-[var(--radix-popover-trigger-width)] p-0', className)}
         align="start"
+        onWheel={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
       >
         <Command
           filter={(value, search) => {
