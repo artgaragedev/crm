@@ -69,6 +69,24 @@ export class ProductsService {
 
   async create(input: CreateProductInput, userId?: string) {
     if (input.categoryId) await this.assertCategoryExists(input.categoryId);
+
+    // Pre-check: unique-конфликт на Product.name. Soft-deleted товары тоже удерживают имя,
+    // поэтому нужно явно сообщать, что имя занято удалённым товаром.
+    const existingByName = await this.prisma.product.findFirst({
+      where: { name: input.name },
+      select: { code: true, deletedAt: true },
+    });
+    if (existingByName) {
+      if (existingByName.deletedAt) {
+        throw new BadRequestException(
+          `Имя "${input.name}" занято удалённым товаром (артикул ${existingByName.code ?? '—'}). Восстанови его или используй другое имя.`,
+        );
+      }
+      throw new BadRequestException(
+        `Товар с именем "${input.name}" уже существует (артикул ${existingByName.code ?? '—'}).`,
+      );
+    }
+
     try {
       const created = await this.prisma.$transaction(async (tx) => {
         const code = await this.allocateProductCode(tx, input.categoryId ?? null, input.name);
@@ -147,11 +165,55 @@ export class ProductsService {
     }
   }
 
-  /** Soft delete: deletedAt. Вариации не трогаем — при restore вернутся. */
+  /**
+   * Удаление товара. Стратегия:
+   *  1) Если у вариантов нет ни одного движения и ни одного лота — реально удаляем из БД
+   *     (Product → ProductVariant и ProductAttribute уйдут каскадом).
+   *  2) Если есть история — БД физически не даст hard-delete (StockMovement/StockLot имеют
+   *     onDelete: Restrict), поэтому фолбэк в soft-delete. Имя/артикул освобождаются partial unique индексом.
+   */
   async remove(id: string, userId?: string) {
-    const product = await this.prisma.product.findUnique({ where: { id } });
+    const product = await this.prisma.product.findUnique({
+      where: { id },
+      include: {
+        variants: {
+          select: {
+            id: true,
+            _count: { select: { movements: true, lots: true } },
+          },
+        },
+      },
+    });
     if (!product) throw new NotFoundException('Product not found');
-    if (product.deletedAt) return;
+    if (product.deletedAt) return { hardDeleted: false };
+
+    const hasHistory = product.variants.some(
+      (v) => v._count.movements > 0 || v._count.lots > 0,
+    );
+
+    if (!hasHistory) {
+      try {
+        await this.prisma.product.delete({ where: { id } });
+        await this.audit.log({
+          entity: 'Product',
+          entityId: id,
+          action: 'DELETE',
+          userId,
+          before: product,
+        });
+        return { hardDeleted: true };
+      } catch (err) {
+        // Safety net: вдруг есть FK-ссылка, которую мы не учли в hasHistory-чеке.
+        // БД — последний судья, фолбэкаем в soft-delete вместо 500.
+        if (
+          !(err instanceof Prisma.PrismaClientKnownRequestError) ||
+          err.code !== 'P2003'
+        ) {
+          throw err;
+        }
+      }
+    }
+
     await this.prisma.product.update({
       where: { id },
       data: { deletedAt: new Date() },
@@ -162,7 +224,9 @@ export class ProductsService {
       action: 'DELETE',
       userId,
       before: product,
+      note: 'soft-delete: есть история движений/лотов',
     });
+    return { hardDeleted: false };
   }
 
   async restore(id: string, userId?: string) {

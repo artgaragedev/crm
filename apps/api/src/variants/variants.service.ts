@@ -294,6 +294,23 @@ export class VariantsService {
       combos.add(key);
     }
 
+    // Pre-check: unique-конфликт на Product.name. Soft-deleted товары тоже удерживают имя,
+    // поэтому нужно явно сообщать, что имя занято удалённым товаром — иначе юзер не поймёт.
+    const existingByName = await this.prisma.product.findFirst({
+      where: { name: input.product.name },
+      select: { code: true, deletedAt: true },
+    });
+    if (existingByName) {
+      if (existingByName.deletedAt) {
+        throw new BadRequestException(
+          `Имя "${input.product.name}" занято удалённым товаром (артикул ${existingByName.code ?? '—'}). Восстанови его или используй другое имя.`,
+        );
+      }
+      throw new BadRequestException(
+        `Товар с именем "${input.product.name}" уже существует (артикул ${existingByName.code ?? '—'}).`,
+      );
+    }
+
     try {
       const result = await this.prisma.$transaction(
         async (tx) => {

@@ -133,8 +133,10 @@ export class ImportService {
       let productId: string;
       let cached = productCache.get(productName);
       if (!cached) {
-        const existing = await tx.product.findUnique({
-          where: { name: productName },
+        // name больше не глобально @unique (partial unique scoped to deletedAt IS NULL).
+        // Импортируем — переиспользуем только живой товар; soft-deleted игнорируем (импорт создаст новый).
+        const existing = await tx.product.findFirst({
+          where: { name: productName, deletedAt: null },
           select: { id: true, unit: true },
         });
         if (existing) {

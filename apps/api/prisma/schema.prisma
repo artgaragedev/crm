@@ -94,9 +94,11 @@ model Category {
 // Конкретные SKU и остатки — на ProductVariant.
 model Product {
   id   String  @id @default(cuid())
-  name String  @unique
-  /** Короткий артикул товара для 1С: "KRU000001". Уникален. Назначается автоматически при создании. */
-  code        String?     @unique
+  /// Уникально среди активных (см. partial unique Product_name_active_key в миграции).
+  /// Soft-deleted строки не удерживают имя.
+  name String
+  /** Короткий артикул товара для 1С: "KRU000001". Уникально среди активных (partial unique). */
+  code        String?
   description String?
   unit        ProductUnit @default(PCS)
   categoryId  String?
@@ -110,6 +112,7 @@ model Product {
 
   @@index([categoryId])
   @@index([name])
+  @@index([code])
   @@index([deletedAt])
 }
 
