@@ -114,6 +114,12 @@ export function MovementSheet({ type, onClose, variants, suppliers, customers, o
   /** Кеш активных lot'ов per variantId — загружается по требованию когда юзер раскрывает manual. */
   const [lotsByVariant, setLotsByVariant] = useState<Record<string, VariantLot[]>>({});
 
+  // Server-side search: при вводе в Combobox строки делаем debounced запрос к /variants?search=...,
+  // потому что список потенциально длиннее, чем initial-загруженные 500 (TURMAN на букву T мог не попасть).
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Variant[] | null>(null);
+  const [searching, setSearching] = useState(false);
+
   const fetchLots = async (variantId: string) => {
     if (lotsByVariant[variantId]) return lotsByVariant[variantId];
     try {
@@ -136,41 +142,65 @@ export function MovementSheet({ type, onClose, variants, suppliers, customers, o
     }
   }, [open, type]);
 
-  // Карта вариаций для быстрого доступа
+  // Debounce поиска в backend: при изменении searchQuery — 300ms тишины — запрос.
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q.length === 0) {
+      setSearchResults(null);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const handle = setTimeout(async () => {
+      try {
+        const res = await api.variants.list({ search: q, pageSize: 50 });
+        setSearchResults(res.items);
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [searchQuery]);
+
+  // Единый кеш variant'ов по id: initial-загруженные + всё что подняли через поиск.
+  // Нужен чтобы info-блок под Combobox'ом мог отрисовать остаток/цену даже если variant пришёл из search.
   const variantById = useMemo(() => {
     const m = new Map<string, Variant>();
     for (const v of variants) m.set(v.id, v);
+    if (searchResults) for (const v of searchResults) m.set(v.id, v);
     return m;
-  }, [variants]);
+  }, [variants, searchResults]);
 
-  const variantOptions: ComboboxOption[] = useMemo(
-    () =>
-      variants
-        .slice()
-        .sort((a, b) => {
-          const an = a.product?.name ?? '';
-          const bn = b.product?.name ?? '';
-          return an.localeCompare(bn, 'ru') || a.sku.localeCompare(b.sku);
-        })
-        .map((v) => {
-          const productName = v.product?.name ?? '—';
-          const color = v.attributes.color ? ` · ${v.attributes.color}` : '';
-          const size = v.attributes.size ? ` · ${v.attributes.size}` : '';
-          const unit = v.product ? UNIT_LABEL[v.product.unit] ?? '' : '';
-          return {
-            value: v.id,
-            label: `${productName}${color}${size}`,
-            description: `SKU ${v.sku}`,
-            searchValue: `${productName} ${v.sku} ${v.attributes.color ?? ''} ${v.attributes.size ?? ''}`,
-            hint: (
-              <span className="tabular-nums">
-                ост. {v.currentStock} {unit}
-              </span>
-            ),
-          };
-        }),
-    [variants],
-  );
+  const variantOptions: ComboboxOption[] = useMemo(() => {
+    // Если юзер что-то ввёл — показываем результаты сервера; иначе — initial-загруженный список.
+    const source = searchQuery.trim().length > 0 ? (searchResults ?? []) : variants;
+    return source
+      .slice()
+      .sort((a, b) => {
+        const an = a.product?.name ?? '';
+        const bn = b.product?.name ?? '';
+        return an.localeCompare(bn, 'ru') || a.sku.localeCompare(b.sku);
+      })
+      .map((v) => {
+        const productName = v.product?.name ?? '—';
+        const color = v.attributes.color ? ` · ${v.attributes.color}` : '';
+        const size = v.attributes.size ? ` · ${v.attributes.size}` : '';
+        const unit = v.product ? UNIT_LABEL[v.product.unit] ?? '' : '';
+        return {
+          value: v.id,
+          label: `${productName}${color}${size}`,
+          description: `SKU ${v.sku}`,
+          searchValue: `${productName} ${v.sku} ${v.attributes.color ?? ''} ${v.attributes.size ?? ''}`,
+          hint: (
+            <span className="tabular-nums">
+              ост. {v.currentStock} {unit}
+            </span>
+          ),
+        };
+      });
+  }, [variants, searchResults, searchQuery]);
 
   const counterpartyOptions: ComboboxOption[] = useMemo(() => {
     if (meta.counterparty === 'supplier') {
@@ -450,9 +480,12 @@ export function MovementSheet({ type, onClose, variants, suppliers, customers, o
                               }),
                             );
                           }}
+                          onSearch={setSearchQuery}
+                          loading={searching}
                           placeholder="Поиск товара или SKU"
                           searchPlaceholder="Введи название или SKU"
                           emptyText="Ничего не найдено"
+                          emptyPlaceholderText="Начни печатать название или SKU"
                           triggerClassName="border-0 bg-transparent shadow-none hover:bg-accent/50 focus-visible:ring-1"
                         />
                         {variant && (

@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { Check, ChevronsUpDown } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Check, ChevronsUpDown, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -38,6 +38,16 @@ interface ComboboxProps {
   className?: string;
   triggerClassName?: string;
   disabled?: boolean;
+  /**
+   * Если задан — Combobox работает в режиме server-side search: при вводе вызывается этот колбэк,
+   * локальный фильтр cmdk отключается, options ожидаются уже отфильтрованными родителем.
+   * Дебаунс — на стороне родителя.
+   */
+  onSearch?: (query: string) => void;
+  /** Показать индикатор загрузки в списке (актуально с onSearch). */
+  loading?: boolean;
+  /** Текст, когда строка поиска пуста (актуально с onSearch). По дефолту совпадает с emptyText. */
+  emptyPlaceholderText?: string;
 }
 
 export function Combobox({
@@ -52,9 +62,26 @@ export function Combobox({
   className,
   triggerClassName,
   disabled,
+  onSearch,
+  loading,
+  emptyPlaceholderText,
 }: ComboboxProps) {
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const selected = options.find((o) => o.value === value);
+  const serverSide = typeof onSearch === 'function';
+
+  // Сброс строки поиска при закрытии — чтобы при следующем открытии не "залипал" старый текст.
+  useEffect(() => {
+    if (!open) setSearch('');
+  }, [open]);
+
+  // Прокидываем строку поиска родителю — он сам решит, делать ли запрос и с каким debounce.
+  useEffect(() => {
+    if (!serverSide) return;
+    onSearch?.(search);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, serverSide]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -92,15 +119,33 @@ export function Combobox({
         onTouchMove={(e) => e.stopPropagation()}
       >
         <Command
-          filter={(value, search) => {
-            // Кастомный фильтр: ищем по value (там у нас сложенный searchValue)
-            return value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0;
-          }}
+          shouldFilter={!serverSide}
+          filter={
+            serverSide
+              ? undefined
+              : (value, search) =>
+                  value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0
+          }
         >
-          <CommandInput placeholder={searchPlaceholder} />
+          <CommandInput
+            placeholder={searchPlaceholder}
+            value={search}
+            onValueChange={setSearch}
+          />
           <CommandList>
-            <CommandEmpty>{emptyText}</CommandEmpty>
-            <CommandGroup>
+            {loading ? (
+              <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Ищу…
+              </div>
+            ) : (
+              <CommandEmpty>
+                {serverSide && search.length === 0
+                  ? emptyPlaceholderText ?? 'Начни печатать для поиска…'
+                  : emptyText}
+              </CommandEmpty>
+            )}
+            {/* Во время server-side загрузки скрываем устаревшие options, чтобы не путать юзера. */}
+            <CommandGroup className={cn(loading && 'hidden')}>
               {allowEmpty && (
                 <CommandItem
                   value="__empty__"
