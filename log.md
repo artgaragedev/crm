@@ -1,51 +1,120 @@
-Starting Container
-warn The configuration property `package.json#prisma` is deprecated and will be removed in Prisma 7. Please migrate to a Prisma config file (e.g., `prisma.config.ts`).
-For more information, see: https://pris.ly/prisma-config
-Prisma schema loaded from prisma/schema.prisma
-Datasource "db": PostgreSQL database "neondb", schema "public" at "ep-cold-smoke-al73qc0a.c-3.eu-central-1.aws.neon.tech"
-8 migrations found in prisma/migrations
-No pending migrations to apply.
- 33 if (!payload?.sub) {
-  34     throw new common_1.UnauthorizedException();
-  35 }
-→ 36 const user = await this.prisma.user.findUnique(
-Timed out fetching a new connection from the connection pool. More info: http://pris.ly/d/connection-pool (Current connection pool timeout: 10, connection limit: 33)
-    at ei.handleRequestError (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:7268)
-    at ei.handleAndLogRequestError (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:6593)
-[Nest] 66  - 05/15/2026, 3:31:07 PM   ERROR [ExceptionsHandler] 
-Invalid `this.prisma.user.findUnique()` invocation in
-/app/apps/api/dist/auth/jwt.strategy.js:36:45
-  33 if (!payload?.sub) {
-  34     throw new common_1.UnauthorizedException();
-  35 }
-→ 36 const user = await this.prisma.user.findUnique(
-Timed out fetching a new connection from the connection pool. More info: http://pris.ly/d/connection-pool (Current connection pool timeout: 10, connection limit: 33)
+  306 const qty = Math.abs(args.quantity);
+  307 const totalCost = qty * unitCost;
+→ 308 const movement = await tx.stockMovement.create(
+Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5008 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.
 PrismaClientKnownRequestError: 
-Invalid `this.prisma.user.findUnique()` invocation in
-/app/apps/api/dist/auth/jwt.strategy.js:36:45
-/app/apps/api/dist/auth/jwt.strategy.js:36:45
-  33 if (!payload?.sub) {
-  34     throw new common_1.UnauthorizedException();
-    at ei.request (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:6300)
-  35 }
-    at async a (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:130:9551)
-→ 36 const user = await this.prisma.user.findUnique(
-    at async JwtStrategy.validate (/app/apps/api/dist/auth/jwt.strategy.js:36:22)
-    at async JwtStrategy.callback [as _verify] (/app/node_modules/.pnpm/@nestjs+passport@10.0.3_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@_065c9ed2201c8c1f9dc8ddcfbf04f6d1/node_modules/@nestjs/passport/dist/passport/passport.strategy.js:11:44)
-Timed out fetching a new connection from the connection pool. More info: http://pris.ly/d/connection-pool (Current connection pool timeout: 10, connection limit: 33)
-[Nest] 66  - 05/15/2026, 3:31:07 PM   ERROR [ExceptionsHandler] 
-PrismaClientKnownRequestError: 
-Invalid `this.prisma.user.findUnique()` invocation in
-Invalid `this.prisma.user.findUnique()` invocation in
-/app/apps/api/dist/auth/jwt.strategy.js:36:45
-  33 if (!payload?.sub) {
-  34     throw new common_1.UnauthorizedException();
-  35 }
-→ 36 const user = await this.prisma.user.findUnique(
-Timed out fetching a new connection from the connection pool. More info: http://pris.ly/d/connection-pool (Current connection pool timeout: 10, connection limit: 33)
+Invalid `tx.stockMovement.create()` invocation in
+/app/apps/api/dist/stock-movements/stock-movements.service.js:308:53
+  305 const unitCost = args.unitCost ?? 0;
+  306 const qty = Math.abs(args.quantity);
+  307 const totalCost = qty * unitCost;
+→ 308 const movement = await tx.stockMovement.create(
+Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5008 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.
     at ei.handleRequestError (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:7268)
     at ei.handleAndLogRequestError (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:6593)
     at ei.request (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:6300)
     at async a (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:130:9551)
-    at async JwtStrategy.validate (/app/apps/api/dist/auth/jwt.strategy.js:36:22)
-    at async JwtStrategy.callback [as _verify] (/app/node_modules/.pnpm/@nestjs+passport@10.0.3_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@_065c9ed2201c8c1f9dc8ddcfbf04f6d1/node_modules/@nestjs/passport/dist/passport/passport.strategy.js:11:44)
+    at async StockMovementsService.applyOne (/app/apps/api/dist/stock-movements/stock-movements.service.js:308:30)
+    at async /app/apps/api/dist/stock-movements/stock-movements.service.js:88:27
+    at async Proxy._transactionWithCallback (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:130:8120)
+    at async /app/node_modules/.pnpm/@nestjs+core@10.4.22_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@0.1_558ae3c7cf983d845eb445c3b6d17e96/node_modules/@nestjs/core/router/router-execution-context.js:46:28
+    at async /app/node_modules/.pnpm/@nestjs+core@10.4.22_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@0.1_558ae3c7cf983d845eb445c3b6d17e96/node_modules/@nestjs/core/router/router-proxy.js:9:17
+[Nest] 66  - 05/18/2026, 11:28:52 AM   ERROR [PrismaService] 
+Invalid `tx.stockMovement.create()` invocation in
+/app/apps/api/dist/stock-movements/stock-movements.service.js:308:53
+  305 const unitCost = args.unitCost ?? 0;
+  306 const qty = Math.abs(args.quantity);
+  307 const totalCost = qty * unitCost;
+→ 308 const movement = await tx.stockMovement.create(
+Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5008 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.
+[Nest] 66  - 05/18/2026, 11:28:52 AM   ERROR [ExceptionsHandler] 
+Invalid `tx.stockMovement.create()` invocation in
+/app/apps/api/dist/stock-movements/stock-movements.service.js:308:53
+  305 const unitCost = args.unitCost ?? 0;
+  306 const qty = Math.abs(args.quantity);
+  307 const totalCost = qty * unitCost;
+→ 308 const movement = await tx.stockMovement.create(
+Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5008 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.
+PrismaClientKnownRequestError: 
+Invalid `tx.stockMovement.create()` invocation in
+/app/apps/api/dist/stock-movements/stock-movements.service.js:308:53
+  305 const unitCost = args.unitCost ?? 0;
+  306 const qty = Math.abs(args.quantity);
+  307 const totalCost = qty * unitCost;
+→ 308 const movement = await tx.stockMovement.create(
+Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5008 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.
+    at ei.handleRequestError (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:7268)
+    at ei.handleAndLogRequestError (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:6593)
+    at ei.request (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:6300)
+    at async a (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:130:9551)
+    at async StockMovementsService.applyOne (/app/apps/api/dist/stock-movements/stock-movements.service.js:308:30)
+    at async /app/apps/api/dist/stock-movements/stock-movements.service.js:88:27
+    at async Proxy._transactionWithCallback (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:130:8120)
+    at async /app/node_modules/.pnpm/@nestjs+core@10.4.22_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@0.1_558ae3c7cf983d845eb445c3b6d17e96/node_modules/@nestjs/core/router/router-execution-context.js:46:28
+    at async /app/node_modules/.pnpm/@nestjs+core@10.4.22_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@0.1_558ae3c7cf983d845eb445c3b6d17e96/node_modules/@nestjs/core/router/router-proxy.js:9:17
+[Nest] 66  - 05/18/2026, 11:33:32 AM   ERROR [PrismaService] 
+Invalid `tx.stockMovement.create()` invocation in
+/app/apps/api/dist/stock-movements/stock-movements.service.js:308:53
+  305 const unitCost = args.unitCost ?? 0;
+  306 const qty = Math.abs(args.quantity);
+  307 const totalCost = qty * unitCost;
+→ 308 const movement = await tx.stockMovement.create(
+Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5009 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.
+[Nest] 66  - 05/18/2026, 11:33:32 AM   ERROR [ExceptionsHandler] 
+Invalid `tx.stockMovement.create()` invocation in
+/app/apps/api/dist/stock-movements/stock-movements.service.js:308:53
+  305 const unitCost = args.unitCost ?? 0;
+  306 const qty = Math.abs(args.quantity);
+  307 const totalCost = qty * unitCost;
+→ 308 const movement = await tx.stockMovement.create(
+Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5009 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.
+PrismaClientKnownRequestError: 
+Invalid `tx.stockMovement.create()` invocation in
+/app/apps/api/dist/stock-movements/stock-movements.service.js:308:53
+  305 const unitCost = args.unitCost ?? 0;
+  306 const qty = Math.abs(args.quantity);
+  307 const totalCost = qty * unitCost;
+→ 308 const movement = await tx.stockMovement.create(
+Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5009 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.
+    at ei.handleRequestError (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:7268)
+    at ei.handleAndLogRequestError (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:6593)
+    at ei.request (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:6300)
+    at async a (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:130:9551)
+    at async StockMovementsService.applyOne (/app/apps/api/dist/stock-movements/stock-movements.service.js:308:30)
+    at async /app/apps/api/dist/stock-movements/stock-movements.service.js:88:27
+    at async Proxy._transactionWithCallback (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:130:8120)
+    at async /app/node_modules/.pnpm/@nestjs+core@10.4.22_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@0.1_558ae3c7cf983d845eb445c3b6d17e96/node_modules/@nestjs/core/router/router-execution-context.js:46:28
+    at async /app/node_modules/.pnpm/@nestjs+core@10.4.22_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@0.1_558ae3c7cf983d845eb445c3b6d17e96/node_modules/@nestjs/core/router/router-proxy.js:9:17
+/app/apps/api/dist/stock-movements/stock-movements.service.js:308:53
+  305 const unitCost = args.unitCost ?? 0;
+  306 const qty = Math.abs(args.quantity);
+  307 const totalCost = qty * unitCost;
+→ 308 const movement = await tx.stockMovement.create(
+Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5008 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.
+→ 308 const movement = await tx.stockMovement.create(
+Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5008 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.
+[Nest] 66  - 05/18/2026, 11:57:28 AM   ERROR [ExceptionsHandler] 
+Invalid `tx.stockMovement.create()` invocation in
+[Nest] 66  - 05/18/2026, 11:57:28 AM   ERROR [PrismaService] 
+Invalid `tx.stockMovement.create()` invocation in
+/app/apps/api/dist/stock-movements/stock-movements.service.js:308:53
+  305 const unitCost = args.unitCost ?? 0;
+  306 const qty = Math.abs(args.quantity);
+  307 const totalCost = qty * unitCost;
+PrismaClientKnownRequestError: 
+Invalid `tx.stockMovement.create()` invocation in
+/app/apps/api/dist/stock-movements/stock-movements.service.js:308:53
+  305 const unitCost = args.unitCost ?? 0;
+  306 const qty = Math.abs(args.quantity);
+  307 const totalCost = qty * unitCost;
+→ 308 const movement = await tx.stockMovement.create(
+Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5008 ms passed since the start of the transaction. Consider increasing the interactive transaction timeout or doing less work in the transaction.
+    at ei.handleRequestError (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:7268)
+    at ei.handleAndLogRequestError (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:6593)
+    at ei.request (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:121:6300)
+    at async a (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:130:9551)
+    at async StockMovementsService.applyOne (/app/apps/api/dist/stock-movements/stock-movements.service.js:308:30)
+    at async /app/apps/api/dist/stock-movements/stock-movements.service.js:88:27
+    at async Proxy._transactionWithCallback (/app/node_modules/.pnpm/@prisma+client@6.19.3_prisma@6.19.3_typescript@5.9.3__typescript@5.9.3/node_modules/@prisma/client/runtime/library.js:130:8120)
+    at async /app/node_modules/.pnpm/@nestjs+core@10.4.22_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@0.1_558ae3c7cf983d845eb445c3b6d17e96/node_modules/@nestjs/core/router/router-execution-context.js:46:28
+    at async /app/node_modules/.pnpm/@nestjs+core@10.4.22_@nestjs+common@10.4.22_class-transformer@0.5.1_class-validator@0.1_558ae3c7cf983d845eb445c3b6d17e96/node_modules/@nestjs/core/router/router-proxy.js:9:17

@@ -108,39 +108,46 @@ export class StockMovementsService {
 
     const date = input.date ? new Date(input.date) : new Date();
 
-    return this.prisma.$transaction(async (tx) => {
-      const variantIds = Array.from(new Set(input.lines.map((l) => l.variantId)));
-      await this.lockVariants(tx, variantIds);
-      await this.assertCounterparties(tx, input.supplierId, input.customerId);
+    // Default timeout 5s — мал для батчей: applyOne делает SELECT FOR UPDATE + INSERT stockMovement
+    // + N INSERT lotConsumption + N UPDATE stockLot, последовательно по каждой строке.
+    // На 80+ позициях упирается в 5s (см. инцидент 2026-05-18: "Transaction already closed").
+    // 60s даёт запас на ~500 строк; maxWait — сколько ждать свободный коннект в пуле.
+    return this.prisma.$transaction(
+      async (tx) => {
+        const variantIds = Array.from(new Set(input.lines.map((l) => l.variantId)));
+        await this.lockVariants(tx, variantIds);
+        await this.assertCounterparties(tx, input.supplierId, input.customerId);
 
-      // Скидку клиента и базовые цены вариантов читаем один раз на весь батч.
-      const pricing = await this.resolveSalePricing(
-        tx,
-        input.type,
-        input.customerId,
-        variantIds,
-      );
+        // Скидку клиента и базовые цены вариантов читаем один раз на весь батч.
+        const pricing = await this.resolveSalePricing(
+          tx,
+          input.type,
+          input.customerId,
+          variantIds,
+        );
 
-      const created: Awaited<ReturnType<typeof this.serialize>>[] = [];
-      for (const line of input.lines) {
-        const m = await this.applyOne(tx, userId, {
-          type: input.type,
-          variantId: line.variantId,
-          quantity: line.quantity,
-          supplierId: input.supplierId,
-          customerId: input.customerId,
-          note: input.note,
-          unitCost: line.unitCost,
-          unitPrice: line.unitPrice,
-          lotAllocations: line.lotAllocations,
-          date,
-          basePrices: pricing.basePrices,
-          customerDiscount: pricing.customerDiscount,
-        });
-        created.push(m);
-      }
-      return created;
-    });
+        const created: Awaited<ReturnType<typeof this.serialize>>[] = [];
+        for (const line of input.lines) {
+          const m = await this.applyOne(tx, userId, {
+            type: input.type,
+            variantId: line.variantId,
+            quantity: line.quantity,
+            supplierId: input.supplierId,
+            customerId: input.customerId,
+            note: input.note,
+            unitCost: line.unitCost,
+            unitPrice: line.unitPrice,
+            lotAllocations: line.lotAllocations,
+            date,
+            basePrices: pricing.basePrices,
+            customerDiscount: pricing.customerDiscount,
+          });
+          created.push(m);
+        }
+        return created;
+      },
+      { maxWait: 10_000, timeout: 60_000 },
+    );
   }
 
   /**
