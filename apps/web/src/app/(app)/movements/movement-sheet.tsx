@@ -120,6 +120,34 @@ export function MovementSheet({ type, onClose, variants, suppliers, customers, o
   const [searchResults, setSearchResults] = useState<Variant[] | null>(null);
   const [searching, setSearching] = useState(false);
 
+  // Persistent кеш variant'ов: НЕ пересчитывается с нуля при смене searchResults.
+  // Без него ранее выбранные в lines варианты "пропадали" из variantOptions, когда юзер ищет
+  // что-то ещё в другой строке — searchQuery shared, и variantOptions становится
+  // `searchResults only`, теряя ранее выбранные. Trigger Combobox-а той строки рендерил placeholder.
+  const [variantCache, setVariantCache] = useState<Map<string, Variant>>(() => new Map());
+
+  useEffect(() => {
+    setVariantCache((prev) => {
+      const next = new Map(prev);
+      let changed = false;
+      for (const v of variants) {
+        if (next.get(v.id) !== v) {
+          next.set(v.id, v);
+          changed = true;
+        }
+      }
+      if (searchResults) {
+        for (const v of searchResults) {
+          if (next.get(v.id) !== v) {
+            next.set(v.id, v);
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [variants, searchResults]);
+
   const fetchLots = async (variantId: string) => {
     if (lotsByVariant[variantId]) return lotsByVariant[variantId];
     try {
@@ -164,20 +192,37 @@ export function MovementSheet({ type, onClose, variants, suppliers, customers, o
     return () => clearTimeout(handle);
   }, [searchQuery]);
 
-  // Единый кеш variant'ов по id: initial-загруженные + всё что подняли через поиск.
-  // Нужен чтобы info-блок под Combobox'ом мог отрисовать остаток/цену даже если variant пришёл из search.
-  const variantById = useMemo(() => {
-    const m = new Map<string, Variant>();
-    for (const v of variants) m.set(v.id, v);
-    if (searchResults) for (const v of searchResults) m.set(v.id, v);
-    return m;
-  }, [variants, searchResults]);
+  // Единый кеш variant'ов по id — для info-блока (остаток/цена) под Combobox'ом.
+  // Использует persistent variantCache чтобы выбранный variant не "пропадал" из info-блока,
+  // когда searchResults меняется (юзер ищет в другой строке).
+  const variantById = variantCache;
 
   const variantOptions: ComboboxOption[] = useMemo(() => {
     // Если юзер что-то ввёл — показываем результаты сервера; иначе — initial-загруженный список.
     const source = searchQuery.trim().length > 0 ? (searchResults ?? []) : variants;
-    return source
-      .slice()
+
+    // КРИТИЧНО: добавляем сюда варианты которые УЖЕ выбраны в lines, но отсутствуют в source.
+    // Иначе trigger Combobox-а той строки рендерит placeholder (options.find(value) → undefined),
+    // и юзеру кажется что клик "не сработал" — хотя state был обновлён правильно.
+    const result: Variant[] = [];
+    const seen = new Set<string>();
+    for (const v of source) {
+      if (!seen.has(v.id)) {
+        result.push(v);
+        seen.add(v.id);
+      }
+    }
+    for (const l of lines) {
+      if (l.variantId && !seen.has(l.variantId)) {
+        const v = variantCache.get(l.variantId);
+        if (v) {
+          result.push(v);
+          seen.add(v.id);
+        }
+      }
+    }
+
+    return result
       .sort((a, b) => {
         const an = a.product?.name ?? '';
         const bn = b.product?.name ?? '';
@@ -200,7 +245,7 @@ export function MovementSheet({ type, onClose, variants, suppliers, customers, o
           ),
         };
       });
-  }, [variants, searchResults, searchQuery]);
+  }, [variants, searchResults, searchQuery, lines, variantCache]);
 
   const counterpartyOptions: ComboboxOption[] = useMemo(() => {
     if (meta.counterparty === 'supplier') {
