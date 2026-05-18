@@ -388,21 +388,23 @@ export class VariantsService {
         .map((id) => variantsById.get(id))
         .filter((v): v is VariantRow => Boolean(v));
 
-      await this.audit.log({
-        entity: 'Product',
-        entityId: result.productId,
-        action: 'CREATE',
-        userId,
-        note: `Создан вариативный товар с ${orderedVariants.length} вариантами`,
-      });
-      for (const v of orderedVariants) {
-        await this.audit.log({
-          entity: 'Variant',
-          entityId: v.id,
+      // Один INSERT вместо N последовательных коннектов из пула (для матриц 50+ вариантов
+      // последовательные audit.log серьёзно нагружали Prisma pool).
+      await this.audit.logMany([
+        {
+          entity: 'Product',
+          entityId: result.productId,
           action: 'CREATE',
           userId,
-        });
-      }
+          note: `Создан вариативный товар с ${orderedVariants.length} вариантами`,
+        },
+        ...orderedVariants.map((v) => ({
+          entity: 'Variant' as const,
+          entityId: v.id,
+          action: 'CREATE' as const,
+          userId,
+        })),
+      ]);
 
       const stocks = await this.computeStocks(orderedVariants.map((v) => v.id));
       return {
@@ -592,21 +594,21 @@ export class VariantsService {
         .map((id) => variantsById.get(id))
         .filter((v): v is VariantRow => Boolean(v));
 
-      await this.audit.log({
-        entity: 'Product',
-        entityId: result.productId,
-        action: 'UPDATE',
-        userId,
-        note: `Расширена матрица: +${orderedVariants.length} вариаций`,
-      });
-      for (const v of orderedVariants) {
-        await this.audit.log({
-          entity: 'Variant',
-          entityId: v.id,
-          action: 'CREATE',
+      await this.audit.logMany([
+        {
+          entity: 'Product',
+          entityId: result.productId,
+          action: 'UPDATE',
           userId,
-        });
-      }
+          note: `Расширена матрица: +${orderedVariants.length} вариаций`,
+        },
+        ...orderedVariants.map((v) => ({
+          entity: 'Variant' as const,
+          entityId: v.id,
+          action: 'CREATE' as const,
+          userId,
+        })),
+      ]);
 
       const stocks = await this.computeStocks(orderedVariants.map((v) => v.id));
       return {

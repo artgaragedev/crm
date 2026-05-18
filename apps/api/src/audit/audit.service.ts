@@ -50,6 +50,30 @@ export class AuditService {
   }
 
   /**
+   * Batch-вариант: пишет N событий одним INSERT (createMany) вместо N последовательных коннектов.
+   * Использовать при массовых операциях (matrix-flow). Не бросает.
+   */
+  async logMany(items: LogParams[]): Promise<void> {
+    if (items.length === 0) return;
+    try {
+      await this.prisma.auditLog.createMany({
+        data: items.map((p) => ({
+          entity: p.entity,
+          entityId: p.entityId,
+          action: p.action,
+          userId: p.userId ?? null,
+          before: this.sanitize(p.before) ?? Prisma.JsonNull,
+          after: this.sanitize(p.after) ?? Prisma.JsonNull,
+          note: p.note ?? null,
+        })),
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[Audit] failed to logMany', err);
+    }
+  }
+
+  /**
    * История изменений сущности.
    */
   async listForEntity(entity: AuditEntity, entityId: string, limit = 100) {

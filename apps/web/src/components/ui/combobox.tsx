@@ -84,7 +84,10 @@ export function Combobox({
   }, [search, serverSide]);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    // modal=true — без этого Popover внутри Radix Dialog (Sheet) теряет клики на items:
+    // DismissableLayer Sheet'а перехватывает pointerdown как outside-interaction, и onSelect
+    // у CommandItem не успевает выстрелить. Известный issue (radix-ui/primitives#1574).
+    <Popover open={open} onOpenChange={setOpen} modal>
       <PopoverTrigger asChild>
         <Button
           variant="outline"
@@ -117,6 +120,10 @@ export function Combobox({
         align="start"
         onWheel={(e) => e.stopPropagation()}
         onTouchMove={(e) => e.stopPropagation()}
+        // preventDefault — не возвращаем focus на trigger при закрытии:
+        // при возврате фокуса в Sheet иногда срабатывает повторный outside-click handler
+        // и Popover тут же снова закрывается, либо click "съедается".
+        onCloseAutoFocus={(e) => e.preventDefault()}
       >
         <Command
           shouldFilter={!serverSide}

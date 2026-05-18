@@ -26,33 +26,42 @@ export class DashboardService {
   async summary() {
     const since = new Date(Date.now() - ACTIVITY_DAYS * 24 * 60 * 60 * 1000);
 
-    // Все 5 запросов независимы — гоним параллельно одним Promise.all.
-    // На Neon cross-region это ~1с вместо ~3-5с по сравнению с последовательным await.
-    const [variants, stockGrouped, lotCostAgg, activityGrouped, recent] =
-      await Promise.all([
-        this.prisma.productVariant.findMany({
-          where: { product: { deletedAt: null } },
-          include: { product: { select: { id: true, name: true, unit: true } } },
-        }),
-        this.prisma.stockMovement.groupBy({
-          by: ['variantId', 'type'],
-          _sum: { quantity: true },
-        }),
-        this.prisma.stockLot.findMany({
-          where: { variant: { product: { deletedAt: null } } },
-          select: { remainingQuantity: true, unitCost: true },
-        }),
-        this.prisma.stockMovement.groupBy({
-          by: ['type'],
-          where: { createdAt: { gte: since } },
-          _count: true,
-        }),
-        this.prisma.stockMovement.findMany({
-          take: RECENT_LIMIT,
-          orderBy: { createdAt: 'desc' },
-          include: MOVEMENT_INCLUDE,
-        }),
-      ]);
+    // Сначала вытаскиваем активные варианты — это и список для отчёта, и фильтр для последующих
+    // агрегаций. Раньше stockMovement.groupBy шёл без where и сканировал ВСЮ таблицу
+    // (включая историю удалённых товаров) — на больших объёмах этот запрос держал коннект
+    // в пуле 5-30с, что и забивало Prisma pool. Теперь groupBy идёт по конкретным variantId
+    // и использует индекс (variantId, type).
+    const variants = await this.prisma.productVariant.findMany({
+      where: { product: { deletedAt: null } },
+      include: { product: { select: { id: true, name: true, unit: true } } },
+    });
+    const variantIds = variants.map((v) => v.id);
+
+    const [stockGrouped, lotCostAgg, activityGrouped, recent] = await Promise.all([
+      variantIds.length === 0
+        ? Promise.resolve([])
+        : this.prisma.stockMovement.groupBy({
+            by: ['variantId', 'type'],
+            where: { variantId: { in: variantIds } },
+            _sum: { quantity: true },
+          }),
+      variantIds.length === 0
+        ? Promise.resolve([])
+        : this.prisma.stockLot.findMany({
+            where: { variantId: { in: variantIds }, remainingQuantity: { gt: 0 } },
+            select: { remainingQuantity: true, unitCost: true },
+          }),
+      this.prisma.stockMovement.groupBy({
+        by: ['type'],
+        where: { createdAt: { gte: since } },
+        _count: true,
+      }),
+      this.prisma.stockMovement.findMany({
+        take: RECENT_LIMIT,
+        orderBy: { createdAt: 'desc' },
+        include: MOVEMENT_INCLUDE,
+      }),
+    ]);
 
     // stockMap нужен для итерации по variants ниже — пересобираем из stockGrouped.
     const stockMap = new Map<string, number>();
