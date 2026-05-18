@@ -48,6 +48,12 @@ interface ComboboxProps {
   loading?: boolean;
   /** Текст, когда строка поиска пуста (актуально с onSearch). По дефолту совпадает с emptyText. */
   emptyPlaceholderText?: string;
+  /**
+   * Если value задан но НЕ в options (typical для server-side search: options меняются с каждым
+   * поиском, ранее выбранный value пропадает из них) — берём info для trigger label отсюда.
+   * В дропдауне этот option НЕ показывается, только в triggere.
+   */
+  selectedFallback?: ComboboxOption | null;
 }
 
 export function Combobox({
@@ -65,10 +71,15 @@ export function Combobox({
   onSearch,
   loading,
   emptyPlaceholderText,
+  selectedFallback,
 }: ComboboxProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
-  const selected = options.find((o) => o.value === value);
+  // Trigger label: сначала ищем в options (текущий dropdown), потом — fallback. Fallback нужен
+  // когда server-side search перетёр options, но value всё ещё валиден.
+  const selected =
+    options.find((o) => o.value === value) ??
+    (value != null && selectedFallback?.value === value ? selectedFallback : undefined);
   const serverSide = typeof onSearch === 'function';
 
   // Сброс строки поиска при закрытии — чтобы при следующем открытии не "залипал" старый текст.

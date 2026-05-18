@@ -197,55 +197,41 @@ export function MovementSheet({ type, onClose, variants, suppliers, customers, o
   // когда searchResults меняется (юзер ищет в другой строке).
   const variantById = variantCache;
 
+  // Превращает Variant → ComboboxOption. Используется и для dropdown options, и для trigger fallback.
+  const variantToOption = (v: Variant): ComboboxOption => {
+    const productName = v.product?.name ?? '—';
+    const color = v.attributes.color ? ` · ${v.attributes.color}` : '';
+    const size = v.attributes.size ? ` · ${v.attributes.size}` : '';
+    const unit = v.product ? UNIT_LABEL[v.product.unit] ?? '' : '';
+    return {
+      value: v.id,
+      label: `${productName}${color}${size}`,
+      description: `SKU ${v.sku}`,
+      searchValue: `${productName} ${v.sku} ${v.attributes.color ?? ''} ${v.attributes.size ?? ''}`,
+      hint: (
+        <span className="tabular-nums">
+          ост. {v.currentStock} {unit}
+        </span>
+      ),
+    };
+  };
+
   const variantOptions: ComboboxOption[] = useMemo(() => {
-    // Если юзер что-то ввёл — показываем результаты сервера; иначе — initial-загруженный список.
+    // Если юзер что-то ввёл — показываем ТОЛЬКО результаты сервера; иначе — initial-загруженный список.
+    // ВАЖНО: не подмешиваем сюда выбранные в lines варианты — иначе при 80+ позициях в форме
+    // в дропдауне поверх результатов поиска вылезают все ранее выбранные. Trigger label для строк,
+    // у которых variant не в текущем source, восстанавливается через selectedFallback (см. ниже).
     const source = searchQuery.trim().length > 0 ? (searchResults ?? []) : variants;
-
-    // КРИТИЧНО: добавляем сюда варианты которые УЖЕ выбраны в lines, но отсутствуют в source.
-    // Иначе trigger Combobox-а той строки рендерит placeholder (options.find(value) → undefined),
-    // и юзеру кажется что клик "не сработал" — хотя state был обновлён правильно.
-    const result: Variant[] = [];
-    const seen = new Set<string>();
-    for (const v of source) {
-      if (!seen.has(v.id)) {
-        result.push(v);
-        seen.add(v.id);
-      }
-    }
-    for (const l of lines) {
-      if (l.variantId && !seen.has(l.variantId)) {
-        const v = variantCache.get(l.variantId);
-        if (v) {
-          result.push(v);
-          seen.add(v.id);
-        }
-      }
-    }
-
-    return result
+    return source
+      .slice()
       .sort((a, b) => {
         const an = a.product?.name ?? '';
         const bn = b.product?.name ?? '';
         return an.localeCompare(bn, 'ru') || a.sku.localeCompare(b.sku);
       })
-      .map((v) => {
-        const productName = v.product?.name ?? '—';
-        const color = v.attributes.color ? ` · ${v.attributes.color}` : '';
-        const size = v.attributes.size ? ` · ${v.attributes.size}` : '';
-        const unit = v.product ? UNIT_LABEL[v.product.unit] ?? '' : '';
-        return {
-          value: v.id,
-          label: `${productName}${color}${size}`,
-          description: `SKU ${v.sku}`,
-          searchValue: `${productName} ${v.sku} ${v.attributes.color ?? ''} ${v.attributes.size ?? ''}`,
-          hint: (
-            <span className="tabular-nums">
-              ост. {v.currentStock} {unit}
-            </span>
-          ),
-        };
-      });
-  }, [variants, searchResults, searchQuery, lines, variantCache]);
+      .map(variantToOption);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variants, searchResults, searchQuery]);
 
   const counterpartyOptions: ComboboxOption[] = useMemo(() => {
     if (meta.counterparty === 'supplier') {
@@ -512,6 +498,9 @@ export function MovementSheet({ type, onClose, variants, suppliers, customers, o
                         <Combobox
                           options={variantOptions}
                           value={line.variantId}
+                          selectedFallback={
+                            line.variantId && variant ? variantToOption(variant) : null
+                          }
                           onChange={(v) => {
                             // При смене variant: пересчитать auto-цену, если менеджер не правил вручную.
                             setLines((prev) =>
