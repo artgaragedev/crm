@@ -36,7 +36,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     );
     (this.$on as unknown as (e: 'error', cb: (event: Prisma.LogEvent) => void) => void)(
       'error',
-      (event) => this.log.error(event.message),
+      (event) => {
+        // Шум от Neon: serverless Postgres закрывает idle-соединения каждые ~5 мин.
+        // Prisma логирует каждое закрытие, но автоматически реконнектится — это не сбой запроса.
+        // Если будут реальные ошибки запросов — они придут с другим сообщением (Timeout, syntax, etc.).
+        if (event.message.includes('kind: Closed')) return;
+        this.log.error(event.message);
+      },
     );
 
     await this.$connect();
