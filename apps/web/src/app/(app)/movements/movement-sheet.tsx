@@ -327,18 +327,38 @@ export function MovementSheet({ type, onClose, variants, suppliers, customers, o
   const validateLines = (): { ok: boolean; message?: string } => {
     if (lines.length === 0) return { ok: false, message: 'Добавь хотя бы одну строку' };
     const seenVariants = new Set<string>();
-    for (const l of lines) {
-      if (!l.variantId) return { ok: false, message: 'Не во всех строках выбрана вариация' };
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i]!;
+      const lineNo = i + 1;
+      if (!l.variantId) return { ok: false, message: `Строка ${lineNo}: не выбрана вариация` };
       if (seenVariants.has(l.variantId))
-        return { ok: false, message: 'Одна и та же вариация выбрана несколько раз' };
+        return { ok: false, message: `Строка ${lineNo}: вариация выбрана несколько раз` };
       seenVariants.add(l.variantId);
-      if (!l.qty.trim()) return { ok: false, message: 'Укажи количество в каждой строке' };
+      if (!l.qty.trim()) return { ok: false, message: `Строка ${lineNo}: укажи количество` };
       const allowedFmt = meta.allowNegative ? /^-?\d+([.,]\d{1,3})?$/ : /^\d+([.,]\d{1,3})?$/;
-      if (!allowedFmt.test(l.qty)) return { ok: false, message: `Количество в формате ${meta.allowNegative ? '−5 / 5' : '5 / 5.5'}` };
+      if (!allowedFmt.test(l.qty)) return { ok: false, message: `Строка ${lineNo}: количество в формате ${meta.allowNegative ? '−5 / 5' : '5 / 5.5'}` };
       const q = Number(l.qty.replace(',', '.'));
-      if (q === 0) return { ok: false, message: 'Количество не может быть нулевым' };
+      if (q === 0) return { ok: false, message: `Строка ${lineNo}: количество не может быть нулевым` };
       if (!meta.allowNegative && q <= 0)
-        return { ok: false, message: 'Для прихода/списания число должно быть положительным' };
+        return { ok: false, message: `Строка ${lineNo}: число должно быть положительным` };
+
+      // Списание: ловим нехватку остатка ДО отправки — иначе одна пустая строка
+      // роняет весь атомарный батч, а серверная ошибка приходит без контекста.
+      // currentStock из загруженного списка может слегка устареть — это лишь ранний фильтр,
+      // авторитетную проверку всё равно делает бэкенд (FIFO по партиям).
+      const isWriteoff = type === 'OUT' || (type === 'ADJUST' && q < 0);
+      if (isWriteoff) {
+        const v = variantById.get(l.variantId);
+        const stock = v?.currentStock ?? 0;
+        const need = Math.abs(q);
+        if (need > stock + 0.0001) {
+          const sku = v?.sku ? ` (${v.sku})` : '';
+          return {
+            ok: false,
+            message: `Строка ${lineNo}${sku}: на складе ${stock}, списать нельзя ${need}`,
+          };
+        }
+      }
     }
     return { ok: true };
   };

@@ -86,9 +86,12 @@ export class StockMovementsService {
         [input.variantId],
       );
 
+      const skuMap = await this.skuMap(tx, [input.variantId]);
+
       return this.applyOne(tx, userId, {
         type: input.type,
         variantId: input.variantId,
+        sku: skuMap.get(input.variantId),
         quantity: input.quantity,
         supplierId: input.supplierId,
         customerId: input.customerId,
@@ -126,23 +129,35 @@ export class StockMovementsService {
           variantIds,
         );
 
+        // SKU нужен только для понятных ошибок: батч атомарен — одна строка с
+        // нулевым остатком роняет весь документ, и менеджер должен видеть, КАКАЯ.
+        const skuMap = await this.skuMap(tx, variantIds);
+
         const created: Awaited<ReturnType<typeof this.serialize>>[] = [];
-        for (const line of input.lines) {
-          const m = await this.applyOne(tx, userId, {
-            type: input.type,
-            variantId: line.variantId,
-            quantity: line.quantity,
-            supplierId: input.supplierId,
-            customerId: input.customerId,
-            note: input.note,
-            unitCost: line.unitCost,
-            unitPrice: line.unitPrice,
-            lotAllocations: line.lotAllocations,
-            date,
-            basePrices: pricing.basePrices,
-            customerDiscount: pricing.customerDiscount,
-          });
-          created.push(m);
+        for (let i = 0; i < input.lines.length; i++) {
+          const line = input.lines[i]!;
+          try {
+            const m = await this.applyOne(tx, userId, {
+              type: input.type,
+              variantId: line.variantId,
+              sku: skuMap.get(line.variantId),
+              quantity: line.quantity,
+              supplierId: input.supplierId,
+              customerId: input.customerId,
+              note: input.note,
+              unitCost: line.unitCost,
+              unitPrice: line.unitPrice,
+              lotAllocations: line.lotAllocations,
+              date,
+              basePrices: pricing.basePrices,
+              customerDiscount: pricing.customerDiscount,
+            });
+            created.push(m);
+          } catch (err) {
+            // Добавляем номер строки. SKU уже в сообщении applyOne (если он его знает).
+            const base = err instanceof Error ? err.message : 'ошибка';
+            throw new BadRequestException(`Строка ${i + 1}: ${base}`);
+          }
         }
         return created;
       },
@@ -365,6 +380,16 @@ export class StockMovementsService {
 
   // ---------- Internal ----------
 
+  /** variantId → sku, для человекочитаемых сообщений об ошибках. */
+  private async skuMap(tx: Tx, variantIds: string[]): Promise<Map<string, string>> {
+    if (variantIds.length === 0) return new Map();
+    const rows = await tx.productVariant.findMany({
+      where: { id: { in: Array.from(new Set(variantIds)) } },
+      select: { id: true, sku: true },
+    });
+    return new Map(rows.map((r) => [r.id, r.sku]));
+  }
+
   /** SELECT FOR UPDATE на все вариации сразу. Защищает от race на батч. */
   private async lockVariants(tx: Tx, variantIds: string[]) {
     if (variantIds.length === 0) return;
@@ -439,6 +464,8 @@ export class StockMovementsService {
     args: {
       type: 'IN' | 'OUT' | 'ADJUST';
       variantId: string;
+      /** SKU вариации — только для человекочитаемых сообщений об ошибках. */
+      sku?: string;
       quantity: number;
       supplierId?: string | null;
       customerId?: string | null;
@@ -504,8 +531,8 @@ export class StockMovementsService {
       // Для FIFO передаём дату движения: при вводе задним числом нельзя списывать из партий,
       // полученных ПОЗЖE даты движения (иначе ломается историческая FIFO-картина).
       const allocations = args.lotAllocations
-        ? await this.validateManualAllocations(tx, args.variantId, qty, args.lotAllocations)
-        : await this.computeFifoAllocations(tx, args.variantId, qty, args.date);
+        ? await this.validateManualAllocations(tx, args.variantId, qty, args.lotAllocations, args.sku)
+        : await this.computeFifoAllocations(tx, args.variantId, qty, args.date, args.sku);
 
       const totalCost = allocations.reduce(
         (s, a) => s + a.quantity * a.unitCost,
@@ -575,6 +602,7 @@ export class StockMovementsService {
     variantId: string,
     needed: number,
     movementDate?: Date,
+    sku?: string,
   ): Promise<Array<{ lotId: string; quantity: number; unitCost: number }>> {
     const lots = await tx.stockLot.findMany({
       where: {
@@ -600,8 +628,20 @@ export class StockMovementsService {
 
     if (remaining > 0.0001) {
       const total = lots.reduce((s, l) => s + Number(l.remainingQuantity), 0);
+      // Если фильтр по дате движения отсёк партии (backdated-списание) — подскажем явно:
+      // остаток может быть, но он получен ПОЗЖЕ даты этого движения.
+      let dateHint = '';
+      if (movementDate) {
+        const laterLots = await tx.stockLot.count({
+          where: { variantId, remainingQuantity: { gt: 0 }, receivedAt: { gt: movementDate } },
+        });
+        if (laterLots > 0) {
+          dateHint = ' (часть остатка получена позже даты движения — проверьте дату)';
+        }
+      }
+      const label = sku ? ` «${sku}»` : '';
       throw new BadRequestException(
-        `Недостаточно товара для списания: доступно ${total}, требуется ${needed}`,
+        `Недостаточно товара${label} для списания: доступно ${total}, требуется ${needed}${dateHint}`,
       );
     }
     return out;
@@ -613,11 +653,13 @@ export class StockMovementsService {
     variantId: string,
     needed: number,
     allocations: LotAllocation[],
+    sku?: string,
   ): Promise<Array<{ lotId: string; quantity: number; unitCost: number }>> {
+    const label = sku ? ` «${sku}»` : '';
     const sum = allocations.reduce((s, a) => s + a.quantity, 0);
     if (Math.abs(sum - needed) > 0.0001) {
       throw new BadRequestException(
-        `Сумма по партиям (${sum}) не совпадает с количеством движения (${needed})`,
+        `Сумма по партиям${label} (${sum}) не совпадает с количеством движения (${needed})`,
       );
     }
     const lotIds = allocations.map((a) => a.lotId);
