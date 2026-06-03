@@ -299,6 +299,48 @@ export class StockMovementsService {
     });
   }
 
+  /**
+   * Проверка инварианта партий: remainingQuantity == initialQuantity − Σ(consumptions).
+   * Расхождение означает порчу данных (остаток будет виден в движениях, но FIFO-списание
+   * не найдёт партий). Считаем одним SQL-агрегатом — дёшево даже на больших объёмах.
+   * Чинится скриптом scripts/reconcile-lots.ts.
+   */
+  async checkLotIntegrity(): Promise<{
+    ok: boolean;
+    mismatchedLots: number;
+    affectedVariants: number;
+    sample: Array<{ lotId: string; variantId: string; remaining: number; expected: number }>;
+  }> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ id: string; variantId: string; remaining: number; expected: number }>
+    >`
+      SELECT l.id,
+             l."variantId"                                    AS "variantId",
+             l."remainingQuantity"::float8                    AS remaining,
+             (l."initialQuantity" - COALESCE(c.consumed, 0))::float8 AS expected
+      FROM "StockLot" l
+      LEFT JOIN (
+        SELECT "lotId", SUM(quantity) AS consumed
+        FROM "LotConsumption"
+        GROUP BY "lotId"
+      ) c ON c."lotId" = l.id
+      WHERE ABS(l."remainingQuantity" - (l."initialQuantity" - COALESCE(c.consumed, 0))) > 0.001
+    `;
+
+    const affectedVariants = new Set(rows.map((r) => r.variantId)).size;
+    return {
+      ok: rows.length === 0,
+      mismatchedLots: rows.length,
+      affectedVariants,
+      sample: rows.slice(0, 20).map((r) => ({
+        lotId: r.id,
+        variantId: r.variantId,
+        remaining: r.remaining,
+        expected: r.expected,
+      })),
+    };
+  }
+
   async lotsForVariant(variantId: string) {
     const lots = await this.prisma.stockLot.findMany({
       where: { variantId },
@@ -459,9 +501,11 @@ export class StockMovementsService {
       const qty = Math.abs(args.quantity);
 
       // 1. Распределение по lot'ам: вручную или FIFO.
+      // Для FIFO передаём дату движения: при вводе задним числом нельзя списывать из партий,
+      // полученных ПОЗЖE даты движения (иначе ломается историческая FIFO-картина).
       const allocations = args.lotAllocations
         ? await this.validateManualAllocations(tx, args.variantId, qty, args.lotAllocations)
-        : await this.computeFifoAllocations(tx, args.variantId, qty);
+        : await this.computeFifoAllocations(tx, args.variantId, qty, args.date);
 
       const totalCost = allocations.reduce(
         (s, a) => s + a.quantity * a.unitCost,
@@ -523,14 +567,21 @@ export class StockMovementsService {
     throw new BadRequestException('Количество не может быть нулевым');
   }
 
-  /** FIFO: берём из самых старых lot'ов с remainingQuantity > 0. */
+  /** FIFO: берём из самых старых lot'ов с remainingQuantity > 0.
+   *  movementDate (опц.): для backdated-движений отсекаем партии, полученные ПОЗЖЕ
+   *  даты движения — нельзя списать из товара, которого на тот момент ещё не было. */
   private async computeFifoAllocations(
     tx: Tx,
     variantId: string,
     needed: number,
+    movementDate?: Date,
   ): Promise<Array<{ lotId: string; quantity: number; unitCost: number }>> {
     const lots = await tx.stockLot.findMany({
-      where: { variantId, remainingQuantity: { gt: 0 } },
+      where: {
+        variantId,
+        remainingQuantity: { gt: 0 },
+        ...(movementDate ? { receivedAt: { lte: movementDate } } : {}),
+      },
       orderBy: { receivedAt: 'asc' },
       select: { id: true, remainingQuantity: true, unitCost: true },
     });

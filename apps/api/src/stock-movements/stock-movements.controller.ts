@@ -11,6 +11,7 @@ import {
 } from '@art-garage/shared';
 import { ZodValidationPipe } from '../common/zod.dto';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { Roles } from '../auth/roles.decorator';
 import { StockMovementsService } from './stock-movements.service';
 
 const listQuerySchema = paginationQuerySchema.extend({
@@ -31,6 +32,16 @@ export class StockMovementsController {
   @Get()
   list(@Query(new ZodValidationPipe(listQuerySchema)) query: ListQuery) {
     return this.movements.list(query);
+  }
+
+  /**
+   * Проверка целостности партий: remaining == initial − Σ(consumptions) по всем lot'ам.
+   * Расхождение = порча данных (остаток виден, но списать нельзя). Чинится reconcile-lots.ts.
+   */
+  @Roles('ADMIN')
+  @Get('lot-integrity')
+  lotIntegrity() {
+    return this.movements.checkLotIntegrity();
   }
 
   @Post()

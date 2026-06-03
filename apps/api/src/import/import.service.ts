@@ -229,13 +229,29 @@ export class ImportService {
           supplierId = sup?.id ?? null;
         }
 
-        await tx.stockMovement.create({
+        const movementUserId = userId ?? (await this.fallbackUserId(tx));
+        const movement = await tx.stockMovement.create({
           data: {
             type: supplierId ? 'IN' : 'ADJUST',
             variantId: variant.id,
             quantity: row.initialStock,
             supplierId,
-            userId: userId ?? (await this.fallbackUserId(tx)),
+            userId: movementUserId,
+            note: 'импорт: стартовый остаток',
+          },
+        });
+        // Обязательно создаём lot: иначе остаток виден в движениях (computeStocks),
+        // но FIFO-списание не находит партий → «недостаточно товара» при живом остатке.
+        await tx.stockLot.create({
+          data: {
+            variantId: variant.id,
+            unitCost: 0,
+            initialQuantity: row.initialStock,
+            remainingQuantity: row.initialStock,
+            receivedAt: movement.createdAt,
+            supplierId,
+            userId: movementUserId,
+            createdByMovementId: movement.id,
             note: 'импорт: стартовый остаток',
           },
         });
