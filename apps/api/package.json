@@ -20,9 +20,6 @@
     "prisma:backfill-attributes": "ts-node --transpile-only prisma/backfill-attributes.ts",
     "postinstall": "prisma generate || true"
   },
-  "prisma": {
-    "seed": "ts-node --transpile-only prisma/seed.ts"
-  },
   "dependencies": {
     "@art-garage/shared": "workspace:*",
     "@nestjs/common": "^10.4.15",
