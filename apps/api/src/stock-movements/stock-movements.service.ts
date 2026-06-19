@@ -175,8 +175,12 @@ export class StockMovementsService {
 
   /**
    * Сторно. Жёсткие правила целостности по lot'ам:
-   * - IN/ADJUST+ можно сторнировать только если созданная партия не была потреблена.
-   * - OUT/ADJUST- сторно создаёт новый lot со средневзвешенной стоимостью потреблённых партий.
+   * - IN/ADJUST+ можно сторнировать только если созданная партия не была потреблена
+   *   (тогда партия удаляется + создаётся компенсирующее OUT-движение).
+   * - OUT/ADJUST- возвращает товар в ИСХОДНЫЕ партии: инкремент remainingQuantity +
+   *   удаление LotConsumption оригинала. Партия НЕ создаётся — сохраняются дата прихода,
+   *   себестоимость и FIFO-история (возврат виден и для списаний задним числом).
+   *   Legacy-движения без consumptions — исключение: для них создаётся компенсирующая партия.
    */
   async reverse(userId: string, originalId: string, note?: string) {
     return this.prisma.$transaction(async (tx) => {
@@ -239,7 +243,7 @@ export class StockMovementsService {
         return this.serialize(created);
       }
 
-      // Реверс списания: создаём новый lot с avg cost потреблённых партий.
+      // Реверс списания: возвращаем товар в исходные партии (см. ниже).
       if (!isPositive) {
         const consumptions = original.consumptions;
         if (consumptions.length === 0) {
@@ -281,16 +285,19 @@ export class StockMovementsService {
           return this.serialize(created);
         }
 
+        // Возвращаем товар в ИСХОДНЫЕ партии (инкремент remainingQuantity + удаление
+        // LotConsumption оригинала), а НЕ создаём новую партию. Это сохраняет дату прихода,
+        // себестоимость и FIFO-историю партий — возврат сразу виден, в т.ч. для списаний
+        // задним числом (date-gate смотрит на receivedAt исходной партии, а не «сегодня»).
+        // Сумма остатка неизменна: оригинал OUT (−qty) гасится сторно IN (+qty) в ledger,
+        // а партии восстанавливаются ровно на потреблённое количество.
         const totalConsumed = consumptions.reduce(
           (sum, c) => sum + Number(c.quantity) * Number(c.lot.unitCost),
           0,
         );
-        const totalQty = consumptions.reduce((sum, c) => sum + Number(c.quantity), 0);
-        const avgCost = totalQty > 0 ? totalConsumed / totalQty : 0;
 
-        const reverseQty = Math.abs(Number(original.quantity));
+        const reverseSignedQty = Math.abs(Number(original.quantity));
         const reverseType = original.type === 'OUT' ? 'IN' : 'ADJUST';
-        const reverseSignedQty = original.type === 'ADJUST' ? reverseQty : reverseQty;
         const created = await tx.stockMovement.create({
           data: {
             type: reverseType,
@@ -305,20 +312,16 @@ export class StockMovementsService {
           },
           include: MOVEMENT_INCLUDE,
         });
-        await tx.stockLot.create({
-          data: {
-            variantId: original.variantId,
-            unitCost: avgCost,
-            initialQuantity: reverseSignedQty,
-            remainingQuantity: reverseSignedQty,
-            // Дата оригинального движения, а не "сегодня": иначе возвращённый товар
-            // встаёт в конец FIFO и невидим для списаний задним числом (receivedAt <= movementDate).
-            receivedAt: original.createdAt,
-            userId,
-            createdByMovementId: created.id,
-            note: 'Возврат из сторно (avg cost потреблённых партий)',
-          },
-        });
+
+        // Восстанавливаем партии и аннулируем потребление оригинала.
+        for (const c of consumptions) {
+          await tx.stockLot.update({
+            where: { id: c.lotId },
+            data: { remainingQuantity: { increment: c.quantity } },
+          });
+        }
+        await tx.lotConsumption.deleteMany({ where: { movementId: original.id } });
+
         return this.serialize(created);
       }
 
