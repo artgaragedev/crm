@@ -17,6 +17,11 @@ import { StockMovementsService } from './stock-movements.service';
 const listQuerySchema = paginationQuerySchema.extend({
   variantId: z.string().optional(),
   type: movementTypeSchema.optional(),
+  // По умолчанию скрываем отменённые оригиналы и их сторно — журнал чище.
+  // ?includeReversed=true показывает всё (для аудита/бухгалтерии).
+  includeReversed: z
+    .preprocess((v) => v === 'true' || v === true, z.boolean())
+    .default(false),
 });
 type ListQuery = z.infer<typeof listQuerySchema>;
 

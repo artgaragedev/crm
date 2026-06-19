@@ -48,11 +48,19 @@ export class StockMovementsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async list(
-    query: PaginationQuery & { variantId?: string; type?: 'IN' | 'OUT' | 'ADJUST' },
+    query: PaginationQuery & {
+      variantId?: string;
+      type?: 'IN' | 'OUT' | 'ADJUST';
+      includeReversed?: boolean;
+    },
   ) {
     const where: Prisma.StockMovementWhereInput = {
       ...(query.variantId ? { variantId: query.variantId } : {}),
       ...(query.type ? { type: query.type } : {}),
+      // Прячем аннулированные: и оригинал (на него есть сторно), и само сторно-движение.
+      ...(query.includeReversed
+        ? {}
+        : { reversesId: null, reversedBy: { is: null } }),
     };
 
     const [items, total] = await Promise.all([
@@ -262,7 +270,9 @@ export class StockMovementsService {
               unitCost: 0,
               initialQuantity: reverseSignedQty,
               remainingQuantity: reverseSignedQty,
-              receivedAt: new Date(),
+              // Дата оригинального движения, а не "сегодня": иначе возвращённый товар
+              // встаёт в конец FIFO и невидим для списаний задним числом (receivedAt <= movementDate).
+              receivedAt: original.createdAt,
               userId,
               createdByMovementId: created.id,
               note: 'Сторно legacy движения без cost-tracking',
@@ -301,7 +311,9 @@ export class StockMovementsService {
             unitCost: avgCost,
             initialQuantity: reverseSignedQty,
             remainingQuantity: reverseSignedQty,
-            receivedAt: new Date(),
+            // Дата оригинального движения, а не "сегодня": иначе возвращённый товар
+            // встаёт в конец FIFO и невидим для списаний задним числом (receivedAt <= movementDate).
+            receivedAt: original.createdAt,
             userId,
             createdByMovementId: created.id,
             note: 'Возврат из сторно (avg cost потреблённых партий)',

@@ -7,6 +7,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  Eye,
+  EyeOff,
   Settings2,
   Undo2,
 } from 'lucide-react';
@@ -57,6 +59,7 @@ export default function MovementsPage() {
 
   const [typeFilter, setTypeFilter] = useState<string>(ALL_TYPES);
   const [variantFilter, setVariantFilter] = useState<string>(ALL_VARIANTS);
+  const [showReversed, setShowReversed] = useState(false);
   const [page, setPage] = useState(1);
   const [data, setData] = useState<{ items: MovementListItem[]; total: number } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -98,6 +101,7 @@ export default function MovementsPage() {
         pageSize: PAGE_SIZE,
         type: typeFilter === ALL_TYPES ? undefined : (typeFilter as MovementType),
         variantId: variantFilter === ALL_VARIANTS ? undefined : variantFilter,
+        includeReversed: showReversed,
       });
       setData({ items: res.items, total: res.total });
     } catch (err) {
@@ -106,11 +110,11 @@ export default function MovementsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, typeFilter, variantFilter]);
+  }, [page, typeFilter, variantFilter, showReversed]);
 
   useEffect(() => {
     setPage(1);
-  }, [typeFilter, variantFilter]);
+  }, [typeFilter, variantFilter, showReversed]);
 
   useEffect(() => {
     void loadMovements();
@@ -193,6 +197,19 @@ export default function MovementsPage() {
             ))}
           </SelectContent>
         </Select>
+        <Button
+          variant={showReversed ? 'secondary' : 'outline'}
+          onClick={() => setShowReversed((v) => !v)}
+          className="w-full sm:w-auto"
+          title="Отменённые движения и сторно скрыты по умолчанию"
+        >
+          {showReversed ? (
+            <EyeOff className="mr-2 h-4 w-4" />
+          ) : (
+            <Eye className="mr-2 h-4 w-4" />
+          )}
+          {showReversed ? 'Скрыть отменённые' : 'Показать отменённые'}
+        </Button>
       </div>
 
       <Card>

@@ -616,6 +616,7 @@ export const api = {
       pageSize?: number;
       variantId?: string;
       type?: MovementType;
+      includeReversed?: boolean;
     }) => request<PaginatedResponse<MovementListItem>>('/stock-movements', { query }),
     create: (input: CreateStockMovementInput) =>
       request<MovementListItem>('/stock-movements', { method: 'POST', body: input }),
